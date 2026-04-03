@@ -121,6 +121,13 @@ class EnergyModel:
                 overhead["exponent_align_pJ"] = (
                     self._e["shift_1b"] * 4 * n_elements  # 4-bit shift
                 )
+            else:
+                # MXINT: POT scale → dequant = q_int << exponent (right-shift)
+                # element_bits = 4 for MXINT4, 8 for MXINT8
+                element_bits = 4 if "MXINT4" in fmt else 8
+                overhead["pot_dequant_shift_pJ"] = (
+                    self._e["shift_1b"] * element_bits * n_elements
+                )
 
         elif "NF4" in fmt or "NVFP4" in fmt:
             # LUT decode per element
@@ -152,10 +159,6 @@ class EnergyModel:
             overhead["rotation_mac_pJ"] = (
                 self.mul_energy(bits) + self.add_energy(bits)
             ) * n_elements * n_elements
-
-        elif "TURBOQUANT" in fmt:
-            # Diagonal sign flip: XOR per element
-            overhead["sign_flip_pJ"] = self._e["mux_1bit"] * n_elements
 
         overhead["total_overhead_pJ"] = sum(overhead.values())
         return overhead

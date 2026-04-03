@@ -107,42 +107,58 @@ def evaluate_scheme_a(
     element_bits_list: list = (4, 8),
     use_yosys: bool = True,
 ) -> dict:
-    """Scheme A: Complex MX array total overhead.
+    """Scheme A: MX array total overhead.
 
-    Includes:
-      - MXFP4 or MXFP8 systolic array.
-      - Block Scale broadcast unit (inside mxfp_mac_array).
-      - Exponent alignment shifter (inside mxfp_mac_array).
-      - Format decode overhead.
+    Evaluates both:
+      - MXFP4/8: FP systolic array with exponent alignment shifter.
+      - MXINT4/8: INT systolic array with POT scale broadcast (no barrel shifter).
+
+    For MXFP: uses mxfp_mac_array (exponent alignment on critical path).
+    For MXINT: uses int_mac_array + scale SRAM read overhead (dequant = right-shift).
     """
     results = {}
     em = EnergyModel()
+    from hardware.pyrtl_modules.format_converters import get_mxfp_scale_read_ppa
 
     for bits in element_bits_list:
-        ppa = get_mxfp_array_ppa(element_bits=bits, rows=rows, cols=cols)
-
-        # Format decode (scale read + exponent alignment)
-        from hardware.pyrtl_modules.format_converters import get_mxfp_scale_read_ppa
-        decode_info = get_mxfp_scale_read_ppa(element_bits=bits)
-
-        # Energy for one layer pass (16×16 array, 256 MACs)
         n_macs = rows * cols
         n_weights = rows * cols
-        energy = em.total_inference_energy(
+
+        # ── MXFP variant ──────────────────────────────────────────────────────
+        mxfp_ppa = get_mxfp_array_ppa(element_bits=bits, rows=rows, cols=cols)
+        decode_info = get_mxfp_scale_read_ppa(element_bits=bits)
+        mxfp_energy = em.total_inference_energy(
             f"MXFP{bits}", n_macs=n_macs,
-            n_weight_reads=n_weights, n_activation_reads=rows * cols
+            n_weight_reads=n_weights, n_activation_reads=n_weights
         )
-
-        yosys_result = None
-
         results[f"MXFP{bits}"] = {
             "scheme": "A",
             "format": f"MXFP{bits}",
-            **ppa,
+            **mxfp_ppa,
             "decode_bw_amplification": decode_info["bandwidth_amplification"],
             "scale_sram_read_pj": decode_info["scale_sram_read_pj"],
-            **{f"energy_{k}": v for k, v in energy.items()},
-            "yosys": yosys_result,
+            **{f"energy_{k}": v for k, v in mxfp_energy.items()},
+            "yosys": None,
+        }
+
+        # ── MXINT variant ─────────────────────────────────────────────────────
+        # INT array is simpler than MXFP (no barrel shifter, no exp alignment).
+        # Overhead: 1 E8M0 scale SRAM read per 32 elements + per-element right-shift.
+        mxint_ppa = get_int_array_ppa(bits=bits, rows=rows, cols=cols)
+        mxint_energy = em.total_inference_energy(
+            f"MXINT{bits}", n_macs=n_macs,
+            n_weight_reads=n_weights, n_activation_reads=n_weights
+        )
+        # Block scale bandwidth amplification: 8 scale bits per 32×bits data bits
+        scale_bw_amp = 1.0 + 8.0 / (32 * bits)
+        results[f"MXINT{bits}"] = {
+            "scheme": "A",
+            "format": f"MXINT{bits}",
+            **mxint_ppa,
+            "decode_bw_amplification": scale_bw_amp,
+            "scale_sram_read_pj": decode_info["scale_sram_read_pj"],  # same scale format
+            **{f"energy_{k}": v for k, v in mxint_energy.items()},
+            "yosys": None,
         }
 
     return results

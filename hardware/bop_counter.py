@@ -144,8 +144,6 @@ class BopCounter:
             breakdown["transform_bops"] = self.smoothquant_scale(K, 32, "SQ_scale")
         elif "RANDROT" in fmt:
             breakdown["transform_bops"] = self.random_rotation(K, activation_bits, "RandRot")
-        elif "TURBOQUANT" in fmt:
-            breakdown["transform_bops"] = self.turbo_sign_flip(K, "TurboSign")
         else:
             breakdown["transform_bops"] = 0.0
 
@@ -184,10 +182,10 @@ def compare_formats_bops(
         "FP32": (32, 32), "BF16": (16, 16), "INT8": (8, 8), "INT4": (4, 4),
         "MXFP8": (8, 8), "MXFP4": (4, 4), "MXINT8": (8, 8), "MXINT4": (4, 4),
         "NF4": (4, 4), "NVFP4": (4, 4), "FP6": (6, 6),
-        "HAD+INT8": (8, 8), "HAD+INT4": (4, 4),
+        "HAD+INT8(C)": (8, 8), "HAD+INT8(T)": (8, 8),
+        "HAD+INT4(C)": (4, 4), "HAD+INT4(T)": (4, 4),
         "SMOOTHQUANT+INT8": (8, 8), "SMOOTHQUANT+INT4": (4, 4),
         "RANDROT+INT4": (4, 4), "RANDROT+INT8": (8, 8),
-        "TURBOQUANT+INT4": (4, 4), "TURBOQUANT+INT8": (8, 8),
         "SQ-FORMAT": (4, 8), "HAD+SQ": (4, 8),
     }
 

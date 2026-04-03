@@ -28,7 +28,12 @@ class NVFP4Format:
         x = x.astype(np.float32)
         # Per-tensor scale: map max(|x|) → max representable (6.0)
         max_val = np.max(np.abs(x))
-        scale = max_val / 6.0 if max_val > 0 else 1.0
+        # POT scale: 2^floor(log2(max_val/6.0)) — division becomes right-shift in hardware
+        if max_val > 0:
+            raw = max_val / 6.0
+            scale = float(2.0 ** np.floor(np.log2(raw + 1e-38)))
+        else:
+            scale = 1.0
         x_scaled = x / scale
 
         sign = np.sign(x_scaled)

@@ -161,12 +161,19 @@ def build_roofline_data(
         ("NF4",            4, 0.0, 0),
         ("FP6",            6, 0.0, 0),
         ("SQ-Format",      5, 1.0, 0),      # 4 dense + 1 mask
-        ("HAD+INT8",       8, 0.0, n_elem_total * math.log2(max(n_elem_total/matmul_m, 2))),
-        ("HAD+INT4",       4, 0.0, n_elem_total * math.log2(max(n_elem_total/matmul_m, 2))),
+        # HAD: at inference only activations need FWHT (weights pre-transformed offline).
+        # Forward: M×K × log2(K) ops; inverse: M×N × log2(N) ops (if needed).
+        ("HAD+INT8(C)",    8, 0.0,
+         matmul_m * matmul_k * int(math.log2(max(matmul_k, 2))) +
+         matmul_m * matmul_n * int(math.log2(max(matmul_n, 2)))),
+        ("HAD+INT4(C)",    4, 0.0,
+         matmul_m * matmul_k * int(math.log2(max(matmul_k, 2))) +
+         matmul_m * matmul_n * int(math.log2(max(matmul_n, 2)))),
+        ("HAD+SQ",         4, 1.0,
+         matmul_m * matmul_k * int(math.log2(max(matmul_k, 2)))),
         ("SmoothQuant+INT8", 8, 0.0, n_elem_activations),
         ("SmoothQuant+INT4", 4, 0.0, n_elem_activations),
         ("RandRot+INT4",   4, 0.0, n_elem_activations ** 2),  # dense matmul
-        ("TurboQuant+INT4", 4, 0.0, n_elem_activations),
     ]
 
     results = []

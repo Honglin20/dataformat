@@ -72,10 +72,10 @@ FORMAT_NAMES = [
     "MXFP4", "MXFP8",
     "MXINT4", "MXINT8",
     "NF4", "FP6",
+    "INT4", "INT8",
     "SmoothQuant+INT4", "SmoothQuant+INT8",
-    "HAD+INT4", "HAD+INT8",
-    "HAD+LUT",
+    "HAD+INT4(C)", "HAD+INT4(T)", "HAD+INT8(C)", "HAD+INT8(T)",
     "HAD+SQ",
+    "SQ-Format",
     "RandRot+INT4", "RandRot+INT8",
-    "TurboQuant+INT4", "TurboQuant+INT8",
 ]
