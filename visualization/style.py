@@ -1,14 +1,14 @@
 """Global matplotlib style configuration for all research figures.
 
-Defines:
-  - Color palette per format family.
-  - Figure sizes and DPI for publication quality.
-  - Consistent marker shapes, line styles.
-  - LaTeX-compatible font settings.
+Focus format set (for main comparison figures):
+  Baselines:        FP32, INT4, INT8
+  Hardware-native:  MXINT4, MXINT8, NVFP4, NF4
+  Transform-based:  HAD+INT4(C), HAD+INT4(T), HAD+INT8(C), HAD+INT8(T), HAD+SQ
+  Sparse-quant:     SQ-Format
+  Upper-bound ref:  RandRot+INT4, RandRot+INT8
 """
 
 import matplotlib.pyplot as plt
-import matplotlib as mpl
 import numpy as np
 
 
@@ -35,96 +35,122 @@ plt.rcParams.update({
 
 # ── Color palette by format family ───────────────────────────────────────────
 PALETTE = {
-    # Baselines (grey tones)
+    # Baselines (grey / brown tones)
     "FP32":    "#6B7280",
     "BF16":    "#9CA3AF",
+    "INT4":    "#92400E",
+    "INT8":    "#B45309",
 
-    # Hardware-native: blue family
-    "NVFP4":   "#1D4ED8",
-    "MXFP4":   "#3B82F6",
-    "MXFP8":   "#60A5FA",
+    # Hardware-native INT: blue family (PRIMARY focus)
     "MXINT4":  "#1E40AF",
     "MXINT8":  "#2563EB",
-    "NF4":     "#7C3AED",  # purple (information-optimal)
-    "FP6":     "#8B5CF6",
 
-    # Transform-based: orange/red/green family
-    "SmoothQuant+INT4": "#F97316",
-    "SmoothQuant+INT8": "#FB923C",
-    "HAD+INT4":   "#16A34A",
-    "HAD+INT8":   "#22C55E",
-    "HAD+LUT4":   "#4ADE80",
-    "HAD+SQ":     "#15803D",
+    # Hardware-native FP: lighter blue (secondary)
+    "MXFP4":   "#60A5FA",
+    "MXFP8":   "#93C5FD",
+
+    # Other 4-bit hardware-native
+    "NVFP4":   "#7C3AED",
+    "NF4":     "#A855F7",
+    "FP6":     "#C084FC",
+
+    # HAD + INT per-channel (C): green family (PRIMARY focus)
+    "HAD+INT4(C)": "#15803D",
+    "HAD+INT8(C)": "#16A34A",
+    "HAD+INT4":    "#15803D",   # alias
+    "HAD+INT8":    "#16A34A",   # alias
+
+    # HAD + INT per-tensor (T): lighter green (ablation)
+    "HAD+INT4(T)": "#4ADE80",
+    "HAD+INT8(T)": "#86EFAC",
+
+    # HAD + SQ: teal
+    "HAD+SQ":  "#0D9488",
+
+    # HAD + LUT (secondary)
+    "HAD+LUT4": "#34D399",
+
+    # SQ-Format: amber
+    "SQ-Format": "#D97706",
+
+    # Random rotation: red (upper-bound reference)
     "RandRot+INT4": "#DC2626",
     "RandRot+INT8": "#EF4444",
-    "TurboQuant+INT4": "#EA580C",
-    "TurboQuant+INT8": "#F97316",
 
-    # SQ-Format
-    "SQ-Format": "#0D9488",
-
-    # Plain INT (no transform)
-    "INT4":    "#D97706",
-    "INT8":    "#B45309",
+    # SmoothQuant (secondary)
+    "SmoothQuant+INT4": "#F97316",
+    "SmoothQuant+INT8": "#FB923C",
 }
 
-# Marker shapes by format family
+# Marker shapes
 MARKERS = {
-    "FP32": "s",     # square
+    "FP32": "s",
     "BF16": "s",
-    "NVFP4": "D",    # diamond
-    "MXFP4": "D",
-    "MXFP8": "D",
-    "MXINT4": "P",   # plus-filled
+    "INT4":  ">",
+    "INT8":  "<",
+    "MXINT4": "P",
     "MXINT8": "P",
-    "NF4": "^",      # triangle
-    "FP6": "^",
-    "HAD+INT4": "o", # circle
-    "HAD+INT8": "o",
-    "HAD+LUT4": "o",
-    "HAD+SQ": "*",   # star
-    "SmoothQuant+INT4": "v",
-    "SmoothQuant+INT8": "v",
+    "MXFP4":  "D",
+    "MXFP8":  "D",
+    "NVFP4":  "D",
+    "NF4":    "^",
+    "FP6":    "^",
+    "HAD+INT4(C)": "o",
+    "HAD+INT8(C)": "o",
+    "HAD+INT4(T)": "v",
+    "HAD+INT8(T)": "v",
+    "HAD+INT4":    "o",
+    "HAD+INT8":    "o",
+    "HAD+SQ":   "*",
+    "HAD+LUT4": "h",
+    "SQ-Format": "8",
     "RandRot+INT4": "X",
     "RandRot+INT8": "X",
-    "TurboQuant+INT4": "h",
-    "TurboQuant+INT8": "h",
-    "SQ-Format": "8",
-    "INT4": ">",
-    "INT8": "<",
+    "SmoothQuant+INT4": "v",
+    "SmoothQuant+INT8": "v",
 }
 
-# Line styles for line plots (e.g., HAD vs RandRot ablation)
+# Line styles for line plots
 LINESTYLES = {
-    "HAD+INT4":    "-",
-    "HAD+INT8":    "-",
-    "RandRot+INT4": "--",
-    "RandRot+INT8": "--",
-    "TurboQuant+INT4": "-.",
-    "TurboQuant+INT8": "-.",
-    "MXFP4":       ":",
-    "MXFP8":       ":",
-    "INT4":        "--",   # plain dashed
-    "INT8":        "--",
+    "FP32":           ":",
+    "INT4":           "--",
+    "INT8":           "--",
+    "MXINT4":         "-",
+    "MXINT8":         "-",
+    "MXFP4":          "-.",
+    "MXFP8":          "-.",
+    "NVFP4":          "-.",
+    "NF4":            "-.",
+    "HAD+INT4(C)":    "-",
+    "HAD+INT8(C)":    "-",
+    "HAD+INT4(T)":    "--",
+    "HAD+INT8(T)":    "--",
+    "HAD+INT4":       "-",
+    "HAD+INT8":       "-",
+    "HAD+SQ":         "-",
+    "SQ-Format":      "-",
+    "RandRot+INT4":   (0, (3, 1, 1, 1)),
+    "RandRot+INT8":   (0, (3, 1, 1, 1)),
+    "SmoothQuant+INT4": "-.",
+    "SmoothQuant+INT8": "-.",
 }
 
 # Format groupings for legend ordering
 FAMILY_GROUPS = {
-    "Baselines": ["FP32", "BF16"],
-    "Hardware-Native 4-bit": ["NVFP4", "MXFP4", "MXINT4", "NF4"],
-    "Hardware-Native 8-bit": ["MXFP8", "MXINT8", "FP6"],
-    "Transform + INT": ["HAD+INT4", "HAD+INT8", "HAD+LUT4", "HAD+SQ"],
-    "SmoothQuant": ["SmoothQuant+INT4", "SmoothQuant+INT8"],
-    "Rotation": ["RandRot+INT4", "RandRot+INT8", "TurboQuant+INT4", "TurboQuant+INT8"],
-    "Sparse-Quantized": ["SQ-Format"],
+    "Baselines": ["FP32", "INT4", "INT8"],
+    "HW-Native INT": ["MXINT4", "MXINT8"],
+    "HW-Native 4-bit": ["NVFP4", "NF4"],
+    "HAD+INT (focus)": ["HAD+INT4(C)", "HAD+INT4(T)", "HAD+INT8(C)", "HAD+INT8(T)"],
+    "HAD+SQ / SQ": ["HAD+SQ", "SQ-Format"],
+    "Upper-bound Ref": ["RandRot+INT4", "RandRot+INT8"],
+    "Secondary": ["MXFP4", "MXFP8", "FP6", "BF16",
+                  "SmoothQuant+INT4", "SmoothQuant+INT8", "HAD+LUT4"],
 }
 
 
 def get_color(fmt_name: str) -> str:
-    """Get color for a format, falling back to a generated color."""
     if fmt_name in PALETTE:
         return PALETTE[fmt_name]
-    # Generate a deterministic hex color from hash (matplotlib-compatible)
     h_val = (hash(fmt_name) & 0xFFFFFF)
     return f"#{h_val:06x}"
 
@@ -133,12 +159,11 @@ def get_marker(fmt_name: str) -> str:
     return MARKERS.get(fmt_name, "o")
 
 
-def get_linestyle(fmt_name: str) -> object:
+def get_linestyle(fmt_name: str):
     return LINESTYLES.get(fmt_name, "-")
 
 
 def format_family(fmt_name: str) -> str:
-    """Return the format family name for grouping in legends."""
     for family, fmts in FAMILY_GROUPS.items():
         if fmt_name in fmts:
             return family
@@ -146,12 +171,10 @@ def format_family(fmt_name: str) -> str:
 
 
 def fig_and_ax(w: float = 8, h: float = 5, nrows: int = 1, ncols: int = 1):
-    """Create figure and axes with publication settings."""
     return plt.subplots(nrows, ncols, figsize=(w, h))
 
 
 def save_fig(fig, name: str, out_dir: str = "results/figures"):
-    """Save figure to PNG and PDF."""
     import os
     os.makedirs(out_dir, exist_ok=True)
     fig.savefig(os.path.join(out_dir, f"{name}.png"), bbox_inches="tight")

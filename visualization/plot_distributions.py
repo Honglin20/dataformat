@@ -1,23 +1,23 @@
-"""Figure 1: Distribution evolution — CDF + Q-Q Plot.
+"""Figure 1: Distribution Evolution — Histogram + Q-Q plots.
 
-Shows how HAD, RandRot, and TurboQuant transform outlier distributions
-into near-Gaussian distributions amenable to uniform quantization.
+Three-panel layout:
+  Left:   Normalized histogram comparison (log y-axis, x clipped to [-15, 15]).
+  Middle: Q-Q plots (sorted values vs standard normal quantiles) for all 4.
+  Right:  Zoom-in Q-Q showing tail behavior difference (HAD uniform vs RandRot Gaussian).
 
-Two-panel layout:
-  Left:  CDFs of original vs. transformed distributions (log-scale tails).
-  Right: Q-Q plot (sorted values vs. standard normal quantiles).
+Key insight annotation: HAD spreads energy perfectly uniformly → equal output
+magnitudes for single-channel-outlier input → tighter quantizer scale →
+finer quantization steps → better SQNR despite RandRot looking more Gaussian.
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.stats import probplot
+from scipy.stats import norm as scipy_norm
 
-from distributions.generators import (
-    channel_outliers, spiky_outliers, student_t_dist
-)
+from distributions.generators import channel_outliers
 from formats.transforms.hadamard import hadamard_transform
-from formats.transforms.random_rotation import RandomRotationTransform, TurboQuantTransform
-from visualization.style import save_fig, fig_and_ax, PALETTE
+from formats.transforms.random_rotation import RandomRotationTransform
+from visualization.style import save_fig, PALETTE
 
 
 def plot_distribution_evolution(
@@ -25,84 +25,140 @@ def plot_distribution_evolution(
     seed: int = 42,
     out_dir: str = "results/figures",
 ):
-    """Plot Figure 1: CDF + Q-Q Plot for distribution evolution under transforms."""
+    """Plot Figure 1: Distribution evolution under HAD and RandRot transforms."""
 
-    # Generate test distribution: channel outliers (most challenging)
-    x_outlier, _ = channel_outliers(n=n, outlier_ratio=0.01, outlier_sigma=50.0, seed=seed)
-    x_gaussian = np.random.default_rng(seed).normal(0, 1, n).astype(np.float32)
-    x_student, _ = student_t_dist(n=n, nu=3, seed=seed)
+    # Generate channel-outlier input (σ=50, the most challenging case)
+    x_orig, _ = channel_outliers(n=n, outlier_sigma=50.0, seed=seed)
 
-    # Apply transforms to channel_outlier distribution
-    had_out = hadamard_transform(x_outlier, normalize=True)
+    # Apply HAD transform (normalize=False: hardware-faithful, no division by sqrt(N))
+    # Then divide by sqrt(N) for display so energies are comparable
+    x_had_raw = hadamard_transform(x_orig, normalize=False)
+    x_had_display = x_had_raw / np.sqrt(float(n))
+
+    # Apply RandRot (dense random orthogonal matrix)
     rand_rot = RandomRotationTransform(dim=n, seed=seed)
-    turbo = TurboQuantTransform(dim=n, seed=seed)
-    randrot_out = rand_rot.forward(x_outlier)
-    turbo_out = turbo.forward(x_outlier)
+    x_randrot = rand_rot.forward(x_orig)
 
-    distributions = {
-        "Original (ChannelOutlier σ=50)": x_outlier,
-        "Student-t (ν=3)": x_student,
-        "HAD transform":  had_out,
-        "TurboQuant":     turbo_out,
-        "RandRot":        randrot_out,
-        "Ideal Gaussian": x_gaussian,
-    }
+    # Ideal Gaussian reference matched to RandRot std
+    rng = np.random.default_rng(seed + 1)
+    sigma_ref = float(np.std(x_randrot))
+    x_gaussian = rng.normal(0.0, sigma_ref, size=n).astype(np.float32)
 
-    colors = {
-        "Original (ChannelOutlier σ=50)": PALETTE["INT4"],
-        "Student-t (ν=3)": PALETTE["MXFP4"],
-        "HAD transform":  PALETTE["HAD+INT4"],
-        "TurboQuant":     PALETTE["TurboQuant+INT4"],
-        "RandRot":        PALETTE["RandRot+INT4"],
-        "Ideal Gaussian": PALETTE["FP32"],
-    }
-    linestyles = {
-        "Original (ChannelOutlier σ=50)": "--",
-        "Student-t (ν=3)": "-.",
-        "HAD transform":  "-",
-        "TurboQuant":     "-",
-        "RandRot":        "-",
-        "Ideal Gaussian": ":",
-    }
+    # Labels, colors, linestyles for the 4 distributions
+    labels = [
+        "Original (Channel Outlier σ=50)",
+        "After HAD",
+        "After RandRot",
+        "Ideal Gaussian",
+    ]
+    arrays = [x_orig, x_had_display, x_randrot, x_gaussian]
+    colors = [
+        PALETTE["INT4"],          # brown — original
+        PALETTE["HAD+INT4(C)"],   # green — HAD
+        PALETTE["RandRot+INT4"],  # red   — RandRot
+        PALETTE["FP32"],          # grey  — Gaussian
+    ]
+    linestyles = ["--", "-", "-.", ":"]
 
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
-    # ── Left: CDF plot ────────────────────────────────────────────────────────
+    # ── Left: Normalized histogram (log y-axis) ──────────────────────────────
     ax = axes[0]
-    for label, x in distributions.items():
-        x_sorted = np.sort(x)
-        cdf = np.arange(1, len(x_sorted) + 1) / len(x_sorted)
-        ax.plot(x_sorted, cdf, label=label,
-                color=colors[label], linestyle=linestyles[label], linewidth=1.8)
+    bins = np.linspace(-15, 15, 80)
+    for label, arr, col, ls in zip(labels, arrays, colors, linestyles):
+        arr_clipped = np.clip(arr, -15, 15)
+        counts, edges = np.histogram(arr_clipped, bins=bins, density=True)
+        centres = 0.5 * (edges[:-1] + edges[1:])
+        ax.plot(centres, np.maximum(counts, 1e-6), label=label,
+                color=col, linestyle=ls, linewidth=1.8)
 
-    ax.set_xlabel("Tensor Value")
-    ax.set_ylabel("Cumulative Probability")
-    ax.set_title("Figure 1a: CDF — Distribution Evolution Under Transforms")
-    ax.legend(loc="lower right", fontsize=8)
-    ax.set_xlim(-20, 20)
+    ax.set_yscale("log")
+    ax.set_xlim(-15, 15)
+    ax.set_ylim(1e-4, 10)
+    ax.set_xlabel("Value")
+    ax.set_ylabel("Density (log scale)")
+    ax.set_title("(a) Histogram after Transform")
+    ax.legend(fontsize=8, loc="upper right")
 
-    # ── Right: Q-Q plot ───────────────────────────────────────────────────────
+    # ── Middle: Q-Q plot (full range) ────────────────────────────────────────
     ax2 = axes[1]
-    for label, x in distributions.items():
-        # Normalize x for Q-Q comparison
-        x_norm = (x - np.mean(x)) / (np.std(x) + 1e-8)
-        theoretical_q = np.sort(
-            np.random.default_rng(seed).standard_normal(len(x_norm))
-        )
+    theoretical = np.sort(scipy_norm.ppf(
+        np.linspace(1 / (2 * n), 1 - 1 / (2 * n), n)
+    ))
+    for label, arr, col, ls in zip(labels, arrays, colors, linestyles):
+        x_norm = arr.copy().astype(np.float64)
+        std = np.std(x_norm)
+        if std > 0:
+            x_norm = (x_norm - np.mean(x_norm)) / std
         sample_q = np.sort(x_norm)
-        ax2.plot(theoretical_q, sample_q, label=label,
-                 color=colors[label], linestyle=linestyles[label],
-                 linewidth=1.2, alpha=0.85)
+        ax2.plot(theoretical, sample_q, label=label,
+                 color=col, linestyle=ls, linewidth=1.5, alpha=0.85)
 
-    # Reference line: y=x (perfect Gaussian)
-    lim = 4.0
-    ax2.plot([-lim, lim], [-lim, lim], "k--", linewidth=1.0, alpha=0.5, label="y=x (Gaussian)")
+    lim = 4.5
+    ax2.plot([-lim, lim], [-lim, lim], "k--", linewidth=1.0, alpha=0.4,
+             label="y = x (perfect Gaussian)")
     ax2.set_xlim(-lim, lim)
     ax2.set_ylim(-lim, lim)
     ax2.set_xlabel("Theoretical Normal Quantiles")
-    ax2.set_ylabel("Sample Quantiles (normalized)")
-    ax2.set_title("Figure 1b: Q-Q Plot vs. Standard Normal")
-    ax2.legend(loc="upper left", fontsize=8)
+    ax2.set_ylabel("Sample Quantiles (z-normalised)")
+    ax2.set_title("(b) Q-Q Plot vs. Standard Normal")
+    ax2.legend(fontsize=7, loc="upper left")
+
+    # ── Right: Zoom-in Q-Q showing tail behavior ──────────────────────────────
+    ax3 = axes[2]
+    theoretical_tail = np.sort(scipy_norm.ppf(
+        np.linspace(1 / (2 * n), 1 - 1 / (2 * n), n)
+    ))
+    # Focus on HAD vs RandRot vs Gaussian in the upper tail
+    tail_labels = ["After HAD", "After RandRot", "Ideal Gaussian"]
+    tail_arrays = [x_had_display, x_randrot, x_gaussian]
+    tail_colors = [PALETTE["HAD+INT4(C)"], PALETTE["RandRot+INT4"], PALETTE["FP32"]]
+    tail_ls     = ["-", "-.", ":"]
+
+    for label, arr, col, ls in zip(tail_labels, tail_arrays, tail_colors, tail_ls):
+        x_norm = arr.copy().astype(np.float64)
+        std = np.std(x_norm)
+        if std > 0:
+            x_norm = (x_norm - np.mean(x_norm)) / std
+        sample_q = np.sort(x_norm)
+        ax3.plot(theoretical_tail, sample_q, label=label,
+                 color=col, linestyle=ls, linewidth=2.0)
+
+    zoom_lo, zoom_hi = 1.5, 4.5
+    ax3.plot([zoom_lo, zoom_hi], [zoom_lo, zoom_hi], "k--",
+             linewidth=1.0, alpha=0.4, label="y = x (Gaussian)")
+    ax3.set_xlim(zoom_lo, zoom_hi)
+    ax3.set_ylim(zoom_lo - 0.5, zoom_hi + 1.5)
+    ax3.set_xlabel("Theoretical Normal Quantiles")
+    ax3.set_ylabel("Sample Quantiles (z-normalised)")
+    ax3.set_title("(c) Tail Zoom: HAD vs RandRot")
+    ax3.legend(fontsize=8, loc="upper left")
+
+    # Key insight annotation: HAD >= RandRot precision despite RandRot looking
+    # more Gaussian. HAD spreads energy PERFECTLY UNIFORMLY → all output elements
+    # have equal magnitude for a single-channel-outlier input → scale = sqrt(N)*sigma
+    # (tighter) → finer quantization steps → better SQNR.
+    # RandRot output is approximately Normal with slightly larger max (by sqrt(log N))
+    # → coarser scale → slightly worse SQNR.
+    ax3.text(
+        0.03, 0.97,
+        "HAD: all outputs equal magnitude\n"
+        "→ scale ∝ √N·σ (tighter)\n"
+        "→ finer quant steps → better SQNR\n\n"
+        "RandRot: ≈ Gaussian, max ∝ √(logN)·σ_had\n"
+        "→ slightly coarser scale → slightly\n"
+        "  worse SQNR (despite looking Gaussian)",
+        transform=ax3.transAxes,
+        fontsize=7.5, va="top", ha="left",
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="lightyellow",
+                  edgecolor="goldenrod", alpha=0.85),
+    )
+
+    fig.suptitle(
+        "Figure 1: Distribution Evolution Under Transforms\n"
+        "(Channel Outlier σ=50  →  HAD  /  RandRot  /  Ideal Gaussian)",
+        fontsize=12, y=1.01,
+    )
 
     save_fig(fig, "fig01_distribution_evolution", out_dir)
     return fig

@@ -1,162 +1,135 @@
 """Figure 9: Format Encoding Efficiency — Storage Bits vs. Effective Bits.
 
-For each format, shows two bars:
-  - Storage bits per element (what you actually store in memory).
-  - Effective bits (information-theoretic equivalent from rate-distortion).
+For each focus format, two bars:
+  - Storage bits per element (what you actually store, incl. metadata).
+  - Effective bits (information-theoretic equivalent, rate-distortion).
 
-The gap between them reveals "wasted" bits — format complexity that doesn't
-translate to proportional quantization quality gains.
-
-Tight gap → format is efficient.
-Wide gap → format overhead (metadata, encoding) doesn't pay off in quality.
+Two sub-panels: Gaussian N(0,1) [easy] and Channel-Outlier σ=50 [hard].
+Key comparison: MXINT4 (pays +0.25 bpe overhead) vs HAD+INT4(C) (zero overhead).
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 
 from distributions.generators import channel_outliers, gaussian
 from distributions.metrics import effective_bits
 from formats import build_all_formats
-from visualization.style import save_fig, PALETTE, get_color
+from visualization.style import save_fig, get_color
 
 
+# Focus formats: (name, nominal_bits, metadata_bpe)
 _EFF_FORMATS = [
-    ("FP32",        32, 0.0),
-    ("BF16",        16, 0.0),
-    ("INT8",         8, 0.0),
-    ("MXFP8",        8, 0.25),
-    ("MXINT8",       8, 0.25),
-    ("FP6",          6, 0.0),
-    ("INT4",         4, 0.0),
-    ("MXFP4",        4, 0.25),
-    ("MXINT4",       4, 0.25),
-    ("NVFP4",        4, 0.0),
-    ("NF4",          4, 0.0),
-    ("SQ-Format",    5, 1.0),
-    ("SmoothQuant+INT8", 8, 0.0),
-    ("SmoothQuant+INT4", 4, 0.0),
-    ("HAD+INT8",     8, 0.0),
-    ("HAD+INT4",     4, 0.0),
-    ("HAD+LUT4",     4, 0.0),
-    ("HAD+SQ",       4, 1.0),
-    ("TurboQuant+INT4", 4, 0.0),
-    ("RandRot+INT4", 4, 0.0),
+    ("FP32",          32, 0.00),
+    ("INT8",           8, 0.00),
+    ("MXINT8",         8, 0.25),
+    ("INT4",           4, 0.00),
+    ("MXINT4",         4, 0.25),
+    ("NVFP4",          4, 0.00),
+    ("NF4",            4, 0.00),
+    ("SQ-Format",      4, 1.01),
+    ("HAD+INT4(C)",    4, 0.00),
+    ("HAD+INT4(T)",    4, 0.00),
+    ("HAD+INT8(C)",    8, 0.00),
+    ("HAD+SQ",         4, 1.01),
+    ("RandRot+INT4",   4, 0.00),
+    ("RandRot+INT8",   8, 0.00),
 ]
 
 
-def compute_encoding_efficiency(n: int = 4096, seed: int = 42) -> list:
-    """Compute storage bits vs. effective bits for each format."""
+def compute_encoding_efficiency(n: int = 4096, seed: int = 42) -> tuple:
     all_formats = build_all_formats(dim=256, seed=seed)
-
-    # Test on both easy (Gaussian) and hard (channel outlier) distributions
     x_easy, _ = gaussian(n=n, sigma=1.0, seed=seed)
     x_hard, _ = channel_outliers(n=n, outlier_sigma=50.0, seed=seed)
 
-    results = []
+    easy, hard = {}, {}
     for fmt_name, nominal_bits, meta_bpe in _EFF_FORMATS:
         if fmt_name not in all_formats:
             continue
         fmt = all_formats[fmt_name]
         storage_bits = nominal_bits + meta_bpe
-
-        for dist_name, x in [("easy (Gaussian)", x_easy), ("hard (Channel Outlier)", x_hard)]:
+        for store_dict, x in [(easy, x_easy), (hard, x_hard)]:
             try:
                 x_q = fmt.quantize(x)
                 eff = effective_bits(x, x_q)
+                if np.isfinite(eff):
+                    eff = min(eff, storage_bits * 1.05)
+                else:
+                    eff = 0.0
             except Exception:
-                eff = np.nan
-
-            efficiency_ratio = eff / max(storage_bits, 0.1) if np.isfinite(eff) else np.nan
-
-            results.append({
-                "format": fmt_name,
-                "nominal_bits": nominal_bits,
-                "metadata_bpe": meta_bpe,
+                eff = 0.0
+            store_dict[fmt_name] = {
                 "storage_bits": storage_bits,
                 "effective_bits": eff,
-                "efficiency_ratio": efficiency_ratio,
-                "distribution": dist_name,
-            })
+            }
+    return easy, hard
 
-    return results
+
+def _draw_panel(ax, data: dict, fmt_names: list, title: str):
+    x_pos = np.arange(len(fmt_names))
+    bar_w = 0.38
+
+    storage_vals = [data[f]["storage_bits"] for f in fmt_names]
+    eff_vals = [data[f]["effective_bits"] for f in fmt_names]
+    colors = [get_color(f) for f in fmt_names]
+
+    # Light bars: storage
+    ax.bar(x_pos - bar_w / 2, storage_vals, bar_w,
+           color=colors, alpha=0.30, edgecolor="gray", linewidth=0.5,
+           label="Storage bits/elem")
+
+    # Dark bars: effective bits
+    ax.bar(x_pos + bar_w / 2, eff_vals, bar_w,
+           color=colors, alpha=0.90, edgecolor="black", linewidth=0.5,
+           label="Effective bits (rate-distortion)")
+
+    # Efficiency % label
+    for i, (s, e) in enumerate(zip(storage_vals, eff_vals)):
+        if s > 0 and e > 0:
+            ax.text(x_pos[i] + bar_w / 2, e + 0.15,
+                    f"{e/s:.0%}", ha="center", va="bottom",
+                    fontsize=7, rotation=90)
+
+    # Red dashed line at storage level (theoretical maximum)
+    for i, s in enumerate(storage_vals):
+        ax.plot([x_pos[i] - bar_w / 2, x_pos[i] + bar_w / 2],
+                [s, s], color="darkred", linewidth=1.0, linestyle="--", alpha=0.4)
+
+    # Annotate MXINT4 +0.25 bpe overhead
+    if "MXINT4" in fmt_names:
+        xi = fmt_names.index("MXINT4")
+        ax.annotate("+0.25\nbpe",
+                    xy=(x_pos[xi] - bar_w / 2, storage_vals[xi]),
+                    xytext=(x_pos[xi] - 0.7, storage_vals[xi] + 0.5),
+                    fontsize=7, color="darkred", ha="center",
+                    arrowprops=dict(arrowstyle="->", color="darkred", lw=0.8))
+
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(fmt_names, rotation=40, ha="right", fontsize=9)
+    ax.set_ylabel("Bits per Element", fontsize=11)
+    ax.set_title(title, fontsize=11)
+    ax.legend(fontsize=8.5, loc="upper right")
+    ax.set_ylim(0, max(storage_vals) * 1.4)
 
 
 def plot_encoding_efficiency(out_dir: str = "results/figures", seed: int = 42):
     """Plot Figure 9: Format Encoding Efficiency."""
-    results = compute_encoding_efficiency(seed=seed)
-
-    # Separate easy/hard
-    easy = {r["format"]: r for r in results if "easy" in r["distribution"]}
-    hard = {r["format"]: r for r in results if "hard" in r["distribution"]}
-
+    easy, hard = compute_encoding_efficiency(seed=seed)
     fmt_names = [f for f, _, _ in _EFF_FORMATS if f in easy]
 
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(18, 7))
 
-    for ax_idx, (ax, data_dict, title_suffix) in enumerate(zip(
-        axes,
-        [easy, hard],
-        ["Gaussian N(0,1)", "Channel Outlier σ=50"]
-    )):
-        x_pos = np.arange(len(fmt_names))
-        bar_width = 0.35
+    _draw_panel(axes[0], easy, fmt_names,
+                "Encoding Efficiency — Gaussian N(0,1)\n"
+                "(light=storage bits, dark=effective bits, label=efficiency%)")
+    _draw_panel(axes[1], hard, fmt_names,
+                "Encoding Efficiency — Channel Outlier σ=50\n"
+                "(MXINT4: pays +0.25bpe overhead; HAD+INT4(C): zero overhead)")
 
-        storage_vals = [data_dict[f]["storage_bits"] for f in fmt_names]
-        # Clip eff_bits to max storage_bits (inf for lossless formats → cap at 32)
-        eff_vals = [
-            min(data_dict[f]["effective_bits"], 32.0)
-            if np.isfinite(data_dict[f]["effective_bits"])
-            else data_dict[f]["storage_bits"]
-            for f in fmt_names
-        ]
+    fig.suptitle(
+        "Figure 9: Format Encoding Efficiency — Storage Bits vs. Effective Bits",
+        fontsize=13, y=1.01,
+    )
 
-        colors_storage = [get_color(f) for f in fmt_names]
-        colors_eff = [get_color(f) for f in fmt_names]
-
-        bars1 = ax.bar(x_pos - bar_width / 2, storage_vals,
-                       bar_width, label="Storage bits/element",
-                       alpha=0.5, color=colors_storage, edgecolor="gray", linewidth=0.5)
-        bars2 = ax.bar(x_pos + bar_width / 2, eff_vals,
-                       bar_width, label="Effective bits (EffBits, rate-distortion)",
-                       alpha=0.9, color=colors_eff, edgecolor="black", linewidth=0.5)
-
-        # Efficiency ratio as text on bars
-        for i, (s, e) in enumerate(zip(storage_vals, eff_vals)):
-            if np.isfinite(e) and s > 0 and e > 0:
-                ratio = e / s
-                ax.text(x_pos[i] + bar_width / 2, max(e, 0) + 0.1,
-                        f"{ratio:.1%}", ha="center", va="bottom", fontsize=6.5, rotation=90)
-
-        # Reference line: storage_bits cap per format
-        for i, (s, e) in enumerate(zip(storage_vals, eff_vals)):
-            if np.isfinite(s) and s > 0:
-                ax.plot([x_pos[i] - bar_width / 2, x_pos[i] + bar_width / 2],
-                        [s, s], color="darkred", linewidth=1.0, alpha=0.5, linestyle="--")
-
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(fmt_names, rotation=45, ha="right", fontsize=8)
-        ax.set_ylabel("Bits per Element")
-        ax.set_title(f"Figure 9: Encoding Efficiency — {title_suffix}\n"
-                     f"(Dark bar = EffBits; gap between bars = wasted encoding budget)")
-        ax.legend(fontsize=8, loc="upper right")
-
-        # Family separator vertical lines
-        boundary_indices = [1, 7, 11, 13, 15, 18]
-        for bi in boundary_indices:
-            if bi < len(fmt_names):
-                ax.axvline(bi - 0.5, color="navy", linewidth=0.8, alpha=0.4, linestyle=":")
-
-        # Add a red-line annotation for MX overhead
-        mx_fmts = ["MXFP4", "MXFP8", "MXINT4", "MXINT8"]
-        for mxf in mx_fmts:
-            if mxf in fmt_names:
-                xi = fmt_names.index(mxf)
-                ax.annotate("+0.25\nbits\n(scale)", xy=(x_pos[xi] - bar_width / 2,
-                            data_dict[mxf]["storage_bits"] - 0.1),
-                            fontsize=5.5, color="darkred", ha="center")
-
-    fig.subplots_adjust(left=0.06, right=0.98, top=0.92, bottom=0.22, wspace=0.25)
     save_fig(fig, "fig09_encoding_efficiency", out_dir)
     return fig
 

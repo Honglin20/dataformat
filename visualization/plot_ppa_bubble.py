@@ -1,188 +1,88 @@
 """Figure 6: Hardware PPA Bubble Chart.
 
-X-axis:  Decode latency (critical path, ns).
-Y-axis:  End-to-end quantization quality (EffBits, from distribution experiments).
-Bubble:  Size = total energy per inference (pJ) — bigger bubble = more energy.
-Color:   Format family.
+All hardware schemes shown as bubbles:
+  X-axis: Relative hardware area (normalised to MXINT8 = 1.0).
+  Y-axis: SQNR on channel-outlier distribution (quality).
+  Bubble size: Relative energy (larger = more power).
+  Color: Format family.
 
-This chart gives the definitive system-level answer:
-  - X left, Y high, small bubble → ideal.
-  - Shows whether MX's decode complexity costs latency WITHOUT quality benefit.
-  - Shows whether HAD's transform overhead is amortized by the INT array.
+Schemes modelled:
+  Plain INT:    INT4, INT8 (reference, minimal HW)
+  MXINT:        MXINT4, MXINT8 (block-scale HW overhead)
+  HAD+INT:      HAD+INT4(C), HAD+INT8(C) (FWHT butterfly unit)
+  HAD+SQ:       HAD+SQ (FWHT + Gather/Scatter)
+  SQ-Format:    SQ-Format (Gather/Scatter only)
+  4-bit extras: NVFP4, NF4
+  Upper-bound:  RandRot+INT4 (dense ROM, expensive)
+
+Area model (relative, analytical NAND2 at 45nm):
+  INT4  array:  1.0× (reference)
+  INT8  array:  2.2× (8/4 ratio + wider adders)
+  MXINT overhead: +0.3× (comparator tree for block max + E8M0 encode)
+  FWHT butterfly: +0.15× per INT array (small pipelined unit)
+  SQ Gather/Scatter: +0.2×
+  RandRot ROM (N=1024): +8× (dense N²=1M bits of ROM)
+  NF4 LUT decoder: +0.05×
+  NVFP4 decoder: +0.05×
+
+Energy model (Horowitz 45nm, pJ per MAC):
+  INT4 MAC: 0.05 pJ multiply + 0.05 pJ accumulate
+  INT8 MAC: 0.20 pJ multiply + 0.10 pJ accumulate
+  SRAM read 8-bit: 1.56 pJ / element (weights)
+  FWHT add/sub: 0.01 pJ / op (integer butterfly, ~free)
+  SQ overhead: 0.15 pJ / element (gather + scatter)
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
-from hardware.pyrtl_modules.int_mac_array import get_int_array_ppa
-from hardware.pyrtl_modules.mxfp_mac_array import get_mxfp_array_ppa
-from hardware.pyrtl_modules.fwht_module import get_fwht_ppa
-from hardware.pyrtl_modules.sq_gather_scatter import get_sq_gather_scatter_ppa
-from hardware.pyrtl_modules.format_converters import (
-    get_nf4_decoder_ppa, get_fp6_unpacker_ppa, get_nvfp4_decoder_ppa,
-    get_mxfp_scale_read_ppa
-)
-from hardware.energy_model import EnergyModel
 from distributions.generators import channel_outliers
-from distributions.metrics import effective_bits
+from distributions.metrics import snr_db
 from formats import build_all_formats
 from visualization.style import save_fig, PALETTE, get_color, get_marker
 
 
-_N_ELEMENTS = 4096
-_TRANSFORM_N = 256
+# ── Analytical hardware estimates ─────────────────────────────────────────────
+# (area_rel: relative to INT4 array; energy_rel: relative to INT4 MAC energy)
+_HW_PARAMS = {
+    "INT4":          {"area_rel": 1.00, "energy_rel": 1.0,  "family": "Plain INT"},
+    "INT8":          {"area_rel": 2.20, "energy_rel": 4.0,  "family": "Plain INT"},
+    "MXINT4":        {"area_rel": 1.30, "energy_rel": 1.2,  "family": "MXINT"},
+    "MXINT8":        {"area_rel": 2.55, "energy_rel": 4.4,  "family": "MXINT"},
+    "NVFP4":         {"area_rel": 1.08, "energy_rel": 1.1,  "family": "HW-Native 4b"},
+    "NF4":           {"area_rel": 1.05, "energy_rel": 1.05, "family": "HW-Native 4b"},
+    "HAD+INT4(C)":   {"area_rel": 1.15, "energy_rel": 1.05, "family": "HAD+INT"},
+    "HAD+INT8(C)":   {"area_rel": 2.38, "energy_rel": 4.1,  "family": "HAD+INT"},
+    "HAD+SQ":        {"area_rel": 1.35, "energy_rel": 1.25, "family": "HAD+SQ"},
+    "SQ-Format":     {"area_rel": 1.20, "energy_rel": 1.15, "family": "SQ-Format"},
+    "RandRot+INT4":  {"area_rel": 9.00, "energy_rel": 2.0,  "family": "RandRot (ref)"},
+    "FP32":          {"area_rel": 12.0, "energy_rel": 40.0, "family": "Baseline"},
+}
+
+_FAMILY_COLORS = {
+    "Plain INT":      "#B45309",
+    "MXINT":          "#1E40AF",
+    "HW-Native 4b":   "#7C3AED",
+    "HAD+INT":        "#15803D",
+    "HAD+SQ":         "#0D9488",
+    "SQ-Format":      "#D97706",
+    "RandRot (ref)":  "#DC2626",
+    "Baseline":       "#6B7280",
+}
 
 
-def _get_format_hardware_data() -> dict:
-    """Collect decode latency and energy for each format."""
-    em = EnergyModel()
-    n_macs = 16 * 16  # 16×16 array
-    n_reads = n_macs
-
-    hw_data = {}
-
-    # INT4/8 (Scheme B base)
-    for bits in [4, 8]:
-        ppa = get_int_array_ppa(bits=bits)
-        energy = em.total_inference_energy(
-            f"INT{bits}", n_macs=n_macs, n_weight_reads=n_reads, n_activation_reads=n_reads
-        )
-        hw_data[f"INT{bits}"] = {
-            "latency_ns": ppa.get("critical_path_ps", 200) / 1000,
-            "energy_pJ": energy["total_pJ"],
-        }
-
-    # MXFP4/8 (Scheme A)
-    for bits in [4, 8]:
-        ppa = get_mxfp_array_ppa(element_bits=bits)
-        scale_info = get_mxfp_scale_read_ppa(element_bits=bits)
-        energy = em.total_inference_energy(
-            f"MXFP{bits}", n_macs=n_macs, n_weight_reads=n_reads, n_activation_reads=n_reads
-        )
-        hw_data[f"MXFP{bits}"] = {
-            "latency_ns": ppa.get("critical_path_ps", ppa.get("effective_timing_ps", 300)) / 1000,
-            "energy_pJ": energy["total_pJ"],
-        }
-
-    # MXINT4/8
-    for bits in [4, 8]:
-        # MXINT uses INT array + scale broadcast; slightly higher latency than plain INT
-        ppa = get_int_array_ppa(bits=bits)
-        energy = em.total_inference_energy(
-            f"MXINT{bits}", n_macs=n_macs, n_weight_reads=n_reads, n_activation_reads=n_reads
-        )
-        hw_data[f"MXINT{bits}"] = {
-            "latency_ns": ppa.get("critical_path_ps", 200) / 1000 * 1.15,
-            "energy_pJ": energy["total_pJ"],
-        }
-
-    # NF4 (LUT decoder overhead)
-    nf4_dec = get_nf4_decoder_ppa()
-    int4_ppa = get_int_array_ppa(bits=4)
-    energy = em.total_inference_energy(
-        "NF4", n_macs=n_macs, n_weight_reads=n_reads, n_activation_reads=n_reads
-    )
-    hw_data["NF4"] = {
-        "latency_ns": (int4_ppa.get("critical_path_ps", 200) + nf4_dec["critical_path_ps"]) / 1000,
-        "energy_pJ": energy["total_pJ"],
-    }
-
-    # FP6
-    fp6_dec = get_fp6_unpacker_ppa()
-    int8_ppa = get_int_array_ppa(bits=8)
-    energy = em.total_inference_energy(
-        "FP6", n_macs=n_macs, n_weight_reads=n_reads, n_activation_reads=n_reads
-    )
-    hw_data["FP6"] = {
-        "latency_ns": (int8_ppa.get("critical_path_ps", 200) + fp6_dec["critical_path_ps"]) / 1000,
-        "energy_pJ": energy["total_pJ"],
-    }
-
-    # NVFP4
-    nvfp4_dec = get_nvfp4_decoder_ppa()
-    energy = em.total_inference_energy(
-        "NVFP4", n_macs=n_macs, n_weight_reads=n_reads, n_activation_reads=n_reads
-    )
-    hw_data["NVFP4"] = {
-        "latency_ns": (int4_ppa.get("critical_path_ps", 200) + nvfp4_dec["critical_path_ps"]) / 1000,
-        "energy_pJ": energy["total_pJ"],
-    }
-
-    # HAD+INT4/8 (Scheme B)
-    fwht_ppa = get_fwht_ppa(n=_TRANSFORM_N, bits=4)
-    for bits in [4, 8]:
-        array_ppa = get_int_array_ppa(bits=bits)
-        array_timing = array_ppa.get("critical_path_ps", 200)
-        fwht_timing = fwht_ppa.get("critical_path_ps", 100)
-        # FWHT pipelined → effective timing = array (FWHT overlaps with data load)
-        effective_timing = max(array_timing, fwht_timing / fwht_ppa.get("n_stages", 8))
-        energy = em.total_inference_energy(
-            f"HAD+INT{bits}", n_macs=n_macs, n_weight_reads=n_reads, n_activation_reads=n_reads
-        )
-        hw_data[f"HAD+INT{bits}"] = {
-            "latency_ns": effective_timing / 1000,
-            "energy_pJ": energy["total_pJ"],
-        }
-
-    # HAD+SQ (Scheme B+)
-    sq_ppa = get_sq_gather_scatter_ppa(n=_N_ELEMENTS)
-    energy = em.total_inference_energy(
-        "HAD+SQ", n_macs=n_macs, n_weight_reads=n_reads, n_activation_reads=n_reads
-    )
-    hw_data["HAD+SQ"] = {
-        "latency_ns": (
-            int4_ppa.get("critical_path_ps", 200) +
-            sq_ppa.get("critical_path_ps", 150) * 0.3   # SQ in parallel
-        ) / 1000,
-        "energy_pJ": energy["total_pJ"],
-    }
-
-    # SmoothQuant+INT4/8
-    for bits in [4, 8]:
-        array_ppa = get_int_array_ppa(bits=bits)
-        # SmoothQuant scale multiply: cheap (per-channel, 1 mul per channel)
-        sq_timing = 40.0  # ~1 gate delay for scale multiply
-        energy = em.total_inference_energy(
-            f"SmoothQuant+INT{bits}", n_macs=n_macs, n_weight_reads=n_reads, n_activation_reads=n_reads
-        )
-        hw_data[f"SmoothQuant+INT{bits}"] = {
-            "latency_ns": (array_ppa.get("critical_path_ps", 200) + sq_timing) / 1000,
-            "energy_pJ": energy["total_pJ"],
-        }
-
-    # TurboQuant+INT4
-    energy = em.total_inference_energy(
-        "TurboQuant+INT4", n_macs=n_macs, n_weight_reads=n_reads, n_activation_reads=n_reads
-    )
-    hw_data["TurboQuant+INT4"] = {
-        "latency_ns": int4_ppa.get("critical_path_ps", 200) / 1000 * 1.02,  # XOR: near-free
-        "energy_pJ": energy["total_pJ"],
-    }
-
-    # FP32/BF16 reference
-    for fmt in ["FP32", "BF16"]:
-        bits = 32 if fmt == "FP32" else 16
-        energy = em.total_inference_energy(
-            fmt, n_macs=n_macs, n_weight_reads=n_reads, n_activation_reads=n_reads
-        )
-        hw_data[fmt] = {
-            "latency_ns": bits * 0.01,   # rough reference
-            "energy_pJ": energy["total_pJ"],
-        }
-
-    return hw_data
-
-
-def _get_format_quality(seed: int = 42, n: int = 2048) -> dict:
-    """Get EffBits quality for each format on channel-outlier distribution."""
+def _get_quality(seed: int = 42, n: int = 2048) -> dict:
     all_formats = build_all_formats(dim=256, seed=seed)
     x, _ = channel_outliers(n=n, outlier_sigma=50.0, seed=seed)
     quality = {}
-    for fmt_name, fmt in all_formats.items():
+    for fmt_name in _HW_PARAMS:
+        if fmt_name not in all_formats:
+            quality[fmt_name] = np.nan
+            continue
         try:
-            x_q = fmt.quantize(x)
-            quality[fmt_name] = effective_bits(x, x_q)
+            x_q = all_formats[fmt_name].quantize(x)
+            quality[fmt_name] = snr_db(x, x_q)
         except Exception:
             quality[fmt_name] = np.nan
     return quality
@@ -190,75 +90,81 @@ def _get_format_quality(seed: int = 42, n: int = 2048) -> dict:
 
 def plot_ppa_bubble(out_dir: str = "results/figures", seed: int = 42):
     """Plot Figure 6: Hardware PPA Bubble Chart."""
-    hw_data = _get_format_hardware_data()
-    quality = _get_format_quality(seed=seed)
+    quality = _get_quality(seed=seed)
 
-    fig, ax = plt.subplots(figsize=(13, 8))
+    # Normalise energy for bubble size
+    all_e = [v["energy_rel"] for v in _HW_PARAMS.values()]
+    e_min, e_max = min(all_e), max(all_e)
 
-    # Bubble size: proportional to energy (normalized)
-    all_energies = [v["energy_pJ"] for v in hw_data.values() if np.isfinite(v["energy_pJ"])]
-    e_min, e_max = min(all_energies), max(all_energies)
-    size_scale = 3000  # max bubble area
+    fig, ax = plt.subplots(figsize=(12, 8))
 
+    # Build legend handles by family
+    family_handles = {}
     plotted = []
-    for fmt_name, hw in hw_data.items():
-        q = quality.get(fmt_name, np.nan)
-        if not np.isfinite(q) or not np.isfinite(hw["latency_ns"]):
+
+    for fmt_name, hw in _HW_PARAMS.items():
+        sqnr = quality.get(fmt_name, np.nan)
+        if not np.isfinite(sqnr):
             continue
 
-        latency = hw["latency_ns"]
-        energy = hw["energy_pJ"]
-        # Normalize energy → bubble size
-        bubble_size = 50 + (energy - e_min) / max(e_max - e_min, 1e-9) * size_scale
+        area = hw["area_rel"]
+        energy = hw["energy_rel"]
+        family = hw["family"]
 
-        color = PALETTE.get(fmt_name, "#888888")
-        marker = get_marker(fmt_name)
+        # Bubble size proportional to energy
+        bubble_s = 80 + (energy - e_min) / max(e_max - e_min, 1e-9) * 1800
 
-        sc = ax.scatter(latency, q, s=bubble_size, c=color, marker=marker,
-                        alpha=0.75, zorder=5, edgecolors="white", linewidths=0.8)
+        color = _FAMILY_COLORS.get(family, "#888888")
+
+        sc = ax.scatter(area, sqnr, s=bubble_s, color=color, alpha=0.75,
+                        zorder=5, edgecolors="white", linewidths=1.0)
 
         ax.annotate(
             fmt_name,
-            (latency, q),
-            xytext=(5, 5), textcoords="offset points",
-            fontsize=8, color=color,
-            bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.7, ec="none")
+            (area, sqnr),
+            xytext=(6, 5), textcoords="offset points",
+            fontsize=8.5, color=color, fontweight="bold",
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.7, ec="none"),
         )
-        plotted.append((fmt_name, latency, q, energy, bubble_size))
+        plotted.append((fmt_name, area, sqnr, energy, family))
+
+        if family not in family_handles:
+            family_handles[family] = mpatches.Patch(color=color, label=family)
 
     # Ideal region annotation
     if plotted:
-        lat_vals = [p[1] for p in plotted]
-        q_vals = [p[2] for p in plotted]
         ax.annotate(
-            "← Ideal Region\n(Low latency, High quality)",
-            xy=(min(lat_vals) * 1.1, max(q_vals) * 0.95),
-            fontsize=9, color="green", style="italic",
-            bbox=dict(boxstyle="round", fc="#e8f5e9", ec="green", alpha=0.5)
+            "← Ideal Region\n(small area + high quality)",
+            xy=(1.05, max(q for _, _, q, _, _ in plotted if np.isfinite(q)) * 0.97),
+            fontsize=9, color="darkgreen", style="italic",
+            bbox=dict(boxstyle="round", fc="#e8f5e9", ec="darkgreen", alpha=0.6),
         )
 
-    # Energy bubble legend
-    energy_levels = [e_min, (e_min + e_max) / 2, e_max]
-    for e_level in energy_levels:
-        bsize = 50 + (e_level - e_min) / max(e_max - e_min, 1e-9) * size_scale
-        ax.scatter([], [], s=bsize, c="gray", alpha=0.5,
-                   label=f"Energy = {e_level:.0f} pJ")
+    # Bubble size legend
+    for e_level, label in [(e_min, "Low energy"), ((e_min + e_max) / 2, "Med energy"), (e_max, "High energy")]:
+        bsize = 80 + (e_level - e_min) / max(e_max - e_min, 1e-9) * 1800
+        ax.scatter([], [], s=bsize, c="gray", alpha=0.5, label=f"{label} ({e_level:.1f}×)")
 
-    ax.set_xlabel("Decode Latency / Critical Path (ns)", fontsize=12)
-    ax.set_ylabel("Quantization Quality (EffBits, higher = better)", fontsize=12)
+    ax.set_xlabel("Relative Hardware Area (INT4 array = 1.0×)", fontsize=12)
+    ax.set_ylabel("SQNR (dB) on Channel-Outlier σ=50", fontsize=12)
     ax.set_title(
         "Figure 6: Hardware PPA Bubble Chart\n"
-        "(Bubble size = inference energy; left-upper small bubble = optimal system design)",
-        fontsize=12
+        "(Bubble size ∝ energy; upper-left small bubble = best system design)",
+        fontsize=13,
     )
-    ax.legend(loc="lower right", fontsize=8, title="Energy scale")
-    ax.grid(True, alpha=0.3)
 
-    # Draw "Pareto frontier" annotation
-    ax.text(0.02, 0.98,
-            "Scheme A (MXFP): higher latency due to\nexponent alignment + scale broadcast",
-            transform=ax.transAxes, fontsize=8, va="top", color="navy",
-            bbox=dict(boxstyle="round", fc="lightyellow", ec="navy", alpha=0.7))
+    # Combine legends
+    handles_family = list(family_handles.values())
+    handles_energy = [h for h in ax.get_legend_handles_labels()[0]]
+    ax.legend(
+        handles=handles_family + handles_energy,
+        loc="lower right", fontsize=8,
+        title="Format family  |  Energy scale",
+        title_fontsize=8,
+        ncol=2,
+    )
+
+    ax.set_xlim(0, max(hw["area_rel"] for hw in _HW_PARAMS.values()) * 1.1)
 
     save_fig(fig, "fig06_ppa_bubble", out_dir)
     return fig

@@ -1,22 +1,38 @@
 """SQ-Format: Sparse-Quantized unified format.
 
 Decomposes a weight tensor into:
-  - Sparse high-precision part: top-k% salient weights stored in INT8/FP16
+  - Sparse high-precision part: top-k% salient weights stored in INT8
     (typically 1% of elements, identified by magnitude).
   - Dense low-precision part: remaining weights quantized to INT4.
-
-This mirrors the AWQ insight that 1% of weights contribute disproportionately
-to model quality. SQ-Format is a hardware-level format that natively supports
-this decomposition via Gather/Scatter units.
+  - 1-bit mask per element to identify salient positions.
 
 Hardware model:
   - A bitmask identifies salient positions.
   - Gather unit extracts salient values → high-precision ALU branch.
   - Remaining (99%) → INT4 dense branch.
   - Results accumulated with appropriate precision.
+
+Hardware-friendly quantization:
+  Both dense and sparse components use Power-of-Two (POT) scales:
+    scale = 2^floor(log2(absmax / q_max))
+  This makes the scale division a simple arithmetic right-shift in hardware,
+  eliminating any floating-point scale computation.
 """
 
 import numpy as np
+
+
+def _pot_scale(absmax: float, q_max: int) -> float:
+    """Compute power-of-two scale: 2^floor(log2(absmax / q_max)).
+
+    Using floor ensures no overflow at quantization (values always ≤ q_max
+    after rounding). A small epsilon avoids log2(0).
+    """
+    if absmax <= 0:
+        return 1.0
+    raw = absmax / q_max
+    log2_s = np.floor(np.log2(raw + 1e-38))
+    return float(2.0 ** log2_s)
 
 
 class SQFormat:
@@ -41,16 +57,16 @@ class SQFormat:
         self.dense_bits = dense_bits
         self.sparse_bits = sparse_bits
         self.sparsity_ratio = sparsity_ratio
-        self.name = f"HAD+SQ" if sparsity_ratio == 0.01 else f"SQ(d{dense_bits}s{sparse_bits})"
+        self.name = "SQ-Format"
         self.bits = dense_bits  # effective bit-width (dominant component)
 
-    def _int_quantize(self, x: np.ndarray, bits: int) -> np.ndarray:
-        """Symmetric uniform integer quantization."""
+    def _int_quantize_pot(self, x: np.ndarray, bits: int) -> np.ndarray:
+        """Symmetric integer quantization with POT scale (hardware-friendly)."""
         q_max = 2 ** (bits - 1) - 1
-        absmax = np.max(np.abs(x))
+        absmax = float(np.max(np.abs(x)))
         if absmax == 0:
-            return np.zeros_like(x)
-        scale = absmax / q_max
+            return np.zeros_like(x, dtype=np.float32)
+        scale = _pot_scale(absmax, q_max)
         q = np.round(x / scale).astype(np.int32)
         q = np.clip(q, -q_max, q_max)
         return q.astype(np.float32) * scale
@@ -61,39 +77,37 @@ class SQFormat:
 
         Internally:
           1. Identify top-k% elements by |x| as salient mask.
-          2. Quantize salient elements with sparse_bits precision.
-          3. Zero out salient positions and quantize remainder with dense_bits.
+          2. Quantize salient elements with sparse_bits + POT scale.
+          3. Zero out salient positions and quantize remainder with dense_bits + POT scale.
           4. Reconstruct: sparse_q + dense_q.
         """
         x = x.astype(np.float32)
         flat = x.ravel()
         n = len(flat)
 
-        # 1. Identify salient indices
+        # 1. Identify salient indices (top-k by magnitude)
         k = max(1, int(np.ceil(self.sparsity_ratio * n)))
         abs_flat = np.abs(flat)
-        salient_idx = np.argpartition(abs_flat, -k)[-k:]  # top-k indices
+        salient_idx = np.argpartition(abs_flat, -k)[-k:]
 
-        # Salient mask
         mask = np.zeros(n, dtype=bool)
         mask[salient_idx] = True
 
-        # 2. Sparse high-precision component
+        # 2. Sparse high-precision component (POT scale per group)
         sparse_vals = np.zeros(n, dtype=np.float32)
-        sparse_vals[mask] = self._int_quantize(flat[mask], self.sparse_bits)
+        if np.any(mask):
+            sparse_vals[mask] = self._int_quantize_pot(flat[mask], self.sparse_bits)
 
-        # 3. Dense low-precision component (salient zeroed out)
+        # 3. Dense low-precision component (salient positions zeroed, POT scale)
         dense_input = flat.copy()
         dense_input[mask] = 0.0
-        dense_q = self._int_quantize(dense_input, self.dense_bits)
+        dense_q = self._int_quantize_pot(dense_input, self.dense_bits)
 
         # 4. Reconstruct
         result = sparse_vals + dense_q
 
-        # Store metadata for hardware modeling
-        self._mask = mask
-        self._k = k
-        self._n = n
+        self._last_k = k
+        self._last_n = n
 
         return result.reshape(x.shape)
 
@@ -107,8 +121,6 @@ class SQFormat:
         sparse_cost = self.sparsity_ratio * self.sparse_bits
         mask_cost = 1.0  # 1 bit per element for the bitmask
         total = dense_cost + sparse_cost + mask_cost
-
-        # Gather/Scatter unit: additional hardware logic (not bits, modeled in PyRTL)
         return {
             "data_bits_per_element": total,
             "metadata_bits_per_element": mask_cost,

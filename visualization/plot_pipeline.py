@@ -1,30 +1,17 @@
 """Figure 10: Hardware Pipeline Latency Breakdown.
 
-Stacked horizontal bar chart showing the clock-cycle breakdown of each pipeline stage
-for Scheme A (MXFP array) and Scheme B (INT + FWHT) side by side.
+Stacked horizontal bar chart for key schemes:
+  Scheme A:  MXINT4 (block-scale integer array)
+  Scheme A8: MXINT8
+  Scheme B:  INT4 + Hadamard (FWHT butterfly unit)
+  Scheme B8: INT8 + Hadamard
+  Scheme B+: INT4 + Hadamard + SQ Gather/Scatter
+  SQ-only:   INT4 + SQ (no Hadamard, reference)
 
-Stages modeled:
-  Scheme A (MXFP4/8):
-    1. Weight load from SRAM
-    2. E8M0 scale read + broadcast
-    3. E2M1/E4M3 element decode
-    4. Exponent alignment (barrel shifter)
-    5. Mantissa multiply
-    6. Accumulate
-    7. Write back
-
-  Scheme B (INT + FWHT):
-    1. Weight/Activation load from SRAM
-    2. FWHT butterfly (pipelined, overlaps with load)
-    3. INT quantize (per-channel scale)
-    4. INT multiply
-    5. INT accumulate
-    6. Inverse FWHT
-    7. Write back
-
-Key point: Scheme A's barrel shifter (stage 4) is the dominant critical-path
-contributor. Scheme B's FWHT is pipelined and overlaps with memory load,
-making it effectively "free" in throughput terms.
+Stage latencies modelled at 45nm:
+  Gate delay ≈ 40 ps, SRAM read ≈ 80 ps.
+  Hadamard butterfly is pipelined and overlaps with memory access.
+  MXINT block-max comparator tree is the dominant latency in Scheme A.
 """
 
 import numpy as np
@@ -34,167 +21,163 @@ import matplotlib.patches as mpatches
 from visualization.style import save_fig, PALETTE
 
 
-# ── Pipeline stage definitions (in picoseconds, 45nm model) ──────────────────
-# Gate delay = 40ps per logic stage. Values are approximate critical-path
-# contributions for each pipeline stage.
-
-SCHEME_A_4BIT = {
-    "name": "Scheme A: MXFP4 Array",
-    "color_base": PALETTE["MXFP4"],
-    "stages": [
-        ("SRAM Weight Load",          80,  "#94a3b8"),
-        ("E8M0 Scale Read+Broadcast", 120, "#f87171"),   # scale broadcast: wider logic
-        ("E2M1 Element Decode",        80, "#fb923c"),
-        ("Exponent Alignment (Shift)", 200, "#ef4444"),  # DOMINANT: barrel shifter
-        ("Mantissa Multiply",          80, "#fca5a5"),
-        ("Accumulate (Add)",           80, "#86efac"),
-        ("Write Back",                 40, "#94a3b8"),
-    ]
+# Stage color scheme (shared across all schemes)
+_CLR = {
+    "mem":      "#94A3B8",   # gray
+    "scale":    "#F87171",   # red   — block-max / scale logic (MXINT bottleneck)
+    "had":      "#4ADE80",   # light green — Hadamard butterfly (pipelined)
+    "int_mul":  "#22C55E",   # green — INT multiply
+    "accum":    "#16A34A",   # dark green — accumulate
+    "sq":       "#0D9488",   # teal  — SQ Gather/Scatter
+    "write":    "#94A3B8",   # gray
 }
 
-SCHEME_A_8BIT = {
-    "name": "Scheme A: MXFP8 Array",
-    "color_base": PALETTE["MXFP8"],
-    "stages": [
-        ("SRAM Weight Load",           80, "#94a3b8"),
-        ("E8M0 Scale Read+Broadcast",  120, "#f87171"),
-        ("E4M3 Element Decode",         80, "#fb923c"),
-        ("Exponent Alignment (Shift)", 240, "#ef4444"),  # 5-bit barrel shifter, DOMINANT
-        ("Mantissa Multiply (4b×4b)",   80, "#fca5a5"),
-        ("Accumulate",                  80, "#86efac"),
-        ("Write Back",                  40, "#94a3b8"),
-    ]
-}
-
-SCHEME_B_4BIT = {
-    "name": "Scheme B: INT4 + FWHT",
-    "color_base": PALETTE["HAD+INT4"],
-    "stages": [
-        ("SRAM Weight/Act Load",       80,  "#94a3b8"),
-        ("FWHT Butterfly (pipelined)", 40,  "#4ade80"),  # overlaps with load → ~free in throughput
-        ("INT4 Quant Scale Apply",      40,  "#86efac"),
-        ("INT4 Multiply",               80,  "#22c55e"),  # FAST: no exponent alignment
-        ("INT Accumulate",              80,  "#16a34a"),
-        ("Inverse FWHT (pipelined)",    40,  "#4ade80"),  # also pipelined
-        ("Write Back",                  40,  "#94a3b8"),
-    ]
-}
-
-SCHEME_B_8BIT = {
-    "name": "Scheme B: INT8 + FWHT",
-    "color_base": PALETTE["HAD+INT8"],
-    "stages": [
-        ("SRAM Weight/Act Load",        80,  "#94a3b8"),
-        ("FWHT Butterfly (pipelined)",  40,  "#4ade80"),
-        ("INT8 Quant Scale Apply",       40,  "#86efac"),
-        ("INT8 Multiply",                80,  "#22c55e"),
-        ("INT Accumulate",               80,  "#16a34a"),
-        ("Inverse FWHT (pipelined)",     40,  "#4ade80"),
-        ("Write Back",                   40,  "#94a3b8"),
-    ]
-}
-
-SCHEME_B_PLUS = {
-    "name": "Scheme B+: INT4 + FWHT + SQ",
-    "color_base": PALETTE["HAD+SQ"],
-    "stages": [
-        ("SRAM Weight/Act Load",        80,  "#94a3b8"),
-        ("FWHT Butterfly (pipelined)",  40,  "#4ade80"),
-        ("SQ Gather (salient 1%)",       80,  "#0d9488"),   # Gather adds some latency
-        ("INT4 Multiply (dense 99%)",    80,  "#22c55e"),
-        ("INT8 Multiply (sparse 1%)",    80,  "#059669"),
-        ("Accumulate (merged)",          80,  "#16a34a"),
-        ("Inverse FWHT + Scatter",       80,  "#0d9488"),
-        ("Write Back",                   40,  "#94a3b8"),
-    ]
-}
+_SCHEMES = [
+    {
+        "name": "Scheme A:  MXINT4",
+        "color_key": "MXINT4",
+        "stages": [
+            ("SRAM Weight Load",             80,  _CLR["mem"]),
+            ("Block-Max Comparator Tree",    180, _CLR["scale"]),   # DOMINANT bottleneck
+            ("E8M0 Scale Broadcast",          80, _CLR["scale"]),
+            ("INT4 Multiply",                 80, _CLR["int_mul"]),
+            ("Accumulate",                    80, _CLR["accum"]),
+            ("Write Back",                    40, _CLR["write"]),
+        ],
+    },
+    {
+        "name": "Scheme A8: MXINT8",
+        "color_key": "MXINT8",
+        "stages": [
+            ("SRAM Weight Load",              80, _CLR["mem"]),
+            ("Block-Max Comparator Tree",    200, _CLR["scale"]),
+            ("E8M0 Scale Broadcast",          80, _CLR["scale"]),
+            ("INT8 Multiply",                 80, _CLR["int_mul"]),
+            ("Accumulate",                    80, _CLR["accum"]),
+            ("Write Back",                    40, _CLR["write"]),
+        ],
+    },
+    {
+        "name": "Scheme B:  INT4 + Hadamard",
+        "color_key": "HAD+INT4(C)",
+        "stages": [
+            ("SRAM Weight/Act Load",          80, _CLR["mem"]),
+            ("Hadamard Butterfly (pipeln'd)", 40, _CLR["had"]),    # overlaps with load
+            ("INT4 Quant Scale (POT)",         40, _CLR["scale"]),
+            ("INT4 Multiply",                  80, _CLR["int_mul"]),
+            ("Accumulate",                     80, _CLR["accum"]),
+            ("Inverse Hadamard (pipeln'd)",    40, _CLR["had"]),
+            ("Write Back",                     40, _CLR["write"]),
+        ],
+    },
+    {
+        "name": "Scheme B8: INT8 + Hadamard",
+        "color_key": "HAD+INT8(C)",
+        "stages": [
+            ("SRAM Weight/Act Load",           80, _CLR["mem"]),
+            ("Hadamard Butterfly (pipeln'd)",  40, _CLR["had"]),
+            ("INT8 Quant Scale (POT)",          40, _CLR["scale"]),
+            ("INT8 Multiply",                   80, _CLR["int_mul"]),
+            ("Accumulate",                      80, _CLR["accum"]),
+            ("Inverse Hadamard (pipeln'd)",     40, _CLR["had"]),
+            ("Write Back",                      40, _CLR["write"]),
+        ],
+    },
+    {
+        "name": "Scheme B+: INT4 + Hadamard + SQ",
+        "color_key": "HAD+SQ",
+        "stages": [
+            ("SRAM Weight/Act Load",            80, _CLR["mem"]),
+            ("Hadamard Butterfly (pipeln'd)",   40, _CLR["had"]),
+            ("SQ Gather (salient 1%)",           80, _CLR["sq"]),
+            ("INT4 Multiply (dense 99%)",        80, _CLR["int_mul"]),
+            ("INT8 Multiply (sparse 1%)",        80, _CLR["int_mul"]),
+            ("Accumulate (merged)",              80, _CLR["accum"]),
+            ("Inverse Hadamard + Scatter",       80, _CLR["sq"]),
+            ("Write Back",                       40, _CLR["write"]),
+        ],
+    },
+    {
+        "name": "SQ-only:  INT4 + SQ (no HAD)",
+        "color_key": "SQ-Format",
+        "stages": [
+            ("SRAM Weight/Act Load",            80, _CLR["mem"]),
+            ("SQ Gather (salient 1%)",           80, _CLR["sq"]),
+            ("INT4 Multiply (dense 99%)",        80, _CLR["int_mul"]),
+            ("INT8 Multiply (sparse 1%)",        80, _CLR["int_mul"]),
+            ("Accumulate (merged)",              80, _CLR["accum"]),
+            ("SQ Scatter",                       40, _CLR["sq"]),
+            ("Write Back",                       40, _CLR["write"]),
+        ],
+    },
+]
 
 
 def plot_pipeline_breakdown(out_dir: str = "results/figures"):
-    """Plot Figure 10: Pipeline Latency Breakdown."""
-    schemes = [
-        SCHEME_A_4BIT,
-        SCHEME_A_8BIT,
-        SCHEME_B_4BIT,
-        SCHEME_B_8BIT,
-        SCHEME_B_PLUS,
-    ]
+    """Plot Figure 10: Hardware Pipeline Latency Breakdown."""
+    fig, ax = plt.subplots(figsize=(15, 7))
+    with plt.rc_context({"figure.constrained_layout.use": False}):
+        fig, ax = plt.subplots(figsize=(15, 7))
 
-    fig, ax = plt.subplots(figsize=(14, 7))
+    y_pos = np.arange(len(_SCHEMES))
+    bar_h = 0.55
 
-    y_positions = np.arange(len(schemes))
-    bar_height = 0.55
+    for yi, scheme in enumerate(_SCHEMES):
+        x = 0
+        for stage_name, dur_ps, color in scheme["stages"]:
+            ax.barh(y_pos[yi], dur_ps, left=x, height=bar_h,
+                    color=color, edgecolor="white", linewidth=0.5)
+            if dur_ps >= 55:
+                ax.text(x + dur_ps / 2, y_pos[yi],
+                        f"{stage_name[:20]}\n{dur_ps}ps",
+                        ha="center", va="center", fontsize=6.2,
+                        color="white" if color != _CLR["mem"] else "black",
+                        fontweight="bold")
+            x += dur_ps
 
-    for y_idx, scheme in enumerate(schemes):
-        x_start = 0
-        stage_patches = []
-        for stage_name, duration_ps, color in scheme["stages"]:
-            bar = ax.barh(
-                y_positions[y_idx],
-                duration_ps, left=x_start, height=bar_height,
-                color=color, edgecolor="white", linewidth=0.5,
-                label=stage_name
-            )
-            # Label inside bar if wide enough
-            if duration_ps >= 60:
-                ax.text(
-                    x_start + duration_ps / 2, y_positions[y_idx],
-                    f"{stage_name[:18]}\n{duration_ps}ps",
-                    ha="center", va="center", fontsize=6.5,
-                    color="white" if color != "#94a3b8" else "black",
-                    fontweight="bold"
-                )
-            x_start += duration_ps
-
-        # Total latency annotation
         total_ps = sum(d for _, d, _ in scheme["stages"])
-        ax.text(
-            total_ps + 10, y_positions[y_idx],
-            f"{total_ps}ps\n({total_ps/1000:.2f}ns)",
-            va="center", ha="left", fontsize=8.5, fontweight="bold",
-            color=scheme["color_base"]
-        )
+        c = PALETTE.get(scheme["color_key"], "#888888")
+        ax.text(x + 12, y_pos[yi],
+                f"{total_ps} ps  ({total_ps/1000:.2f} ns)",
+                va="center", ha="left", fontsize=9, color=c, fontweight="bold")
 
-    # Y-axis labels
-    ax.set_yticks(y_positions)
-    ax.set_yticklabels([s["name"] for s in schemes], fontsize=10)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels([s["name"] for s in _SCHEMES], fontsize=10)
+    ax.invert_yaxis()
 
-    # Vertical lines at key latencies for comparison
-    ax.axvline(400, color="navy", linewidth=0.8, linestyle="--", alpha=0.5)
-    ax.text(400, len(schemes) - 0.3, "400ps\n(2.5GHz budget)",
-            ha="center", fontsize=8, color="navy", alpha=0.7)
-
-    ax.set_xlabel("Pipeline Stage Latency (ps, critical path) — 45nm Technology Node")
-    ax.set_title(
-        "Figure 10: Hardware Pipeline Latency Breakdown — Scheme A vs. Scheme B\n"
-        "(Exponent Alignment in MXFP is the dominant bottleneck; "
-        "FWHT butterflies overlap with memory load in Scheme B)",
-        fontsize=11
-    )
-
-    # Legend for stage types
-    legend_elements = [
-        mpatches.Patch(facecolor="#94a3b8", label="Memory Access"),
-        mpatches.Patch(facecolor="#ef4444", label="Exponent Logic (MXFP only)"),
-        mpatches.Patch(facecolor="#4ade80", label="FWHT Butterfly (pipelined)"),
-        mpatches.Patch(facecolor="#22c55e", label="INT Compute"),
-        mpatches.Patch(facecolor="#fb923c", label="Format Decode"),
-        mpatches.Patch(facecolor="#0d9488", label="SQ Gather/Scatter"),
-    ]
-    ax.legend(handles=legend_elements, loc="lower right", fontsize=8, ncol=3)
-
-    # Horizontal separator between Scheme A and B
-    ax.axhline(1.5, color="black", linewidth=1.5, alpha=0.5, linestyle="-")
-    ax.text(-20, 1.55, "↑ Scheme A\n(MXFP)", ha="right", fontsize=9,
-            color="darkblue", fontweight="bold")
-    ax.text(-20, 1.45, "↓ Scheme B\n(INT+HAD)", ha="right", fontsize=9,
+    # Separator between Scheme A and Scheme B
+    ax.axhline(1.5, color="black", linewidth=1.5, alpha=0.5)
+    ax.text(-15, 0.9, "Scheme A\n(MXINT)", ha="right", fontsize=9,
+            color="navy", fontweight="bold")
+    ax.text(-15, 2.1, "Scheme B\n(INT+HAD)", ha="right", fontsize=9,
             color="darkgreen", fontweight="bold")
 
-    ax.invert_yaxis()
-    ax.set_xlim(0, max(
-        sum(d for _, d, _ in s["stages"]) for s in schemes
-    ) * 1.15)
+    ax.axvline(400, color="gray", linewidth=0.8, linestyle="--", alpha=0.5)
+    ax.text(400, len(_SCHEMES) - 0.3, "400 ps\n(2.5 GHz budget)",
+            ha="center", fontsize=7.5, color="gray")
 
+    ax.set_xlabel("Pipeline Stage Latency (ps, critical path) — 45nm", fontsize=11)
+    ax.set_title(
+        "Figure 10: Hardware Pipeline Latency Breakdown\n"
+        "(Block-Max Comparator Tree in MXINT is dominant bottleneck; "
+        "Hadamard butterfly is pipelined and nearly free)",
+        fontsize=12,
+    )
+
+    legend_elements = [
+        mpatches.Patch(facecolor=_CLR["mem"],     label="Memory Access"),
+        mpatches.Patch(facecolor=_CLR["scale"],   label="Scale / Block-Max Logic"),
+        mpatches.Patch(facecolor=_CLR["had"],     label="Hadamard Butterfly (pipelined)"),
+        mpatches.Patch(facecolor=_CLR["int_mul"], label="INT Multiply"),
+        mpatches.Patch(facecolor=_CLR["accum"],   label="Accumulate"),
+        mpatches.Patch(facecolor=_CLR["sq"],      label="SQ Gather/Scatter"),
+    ]
+    ax.legend(handles=legend_elements, loc="lower right", fontsize=8.5, ncol=3)
+
+    max_total = max(sum(d for _, d, _ in s["stages"]) for s in _SCHEMES)
+    ax.set_xlim(0, max_total * 1.18)
+
+    fig.subplots_adjust(left=0.22, right=0.97, top=0.90, bottom=0.10)
     save_fig(fig, "fig10_pipeline_breakdown", out_dir)
     return fig
 

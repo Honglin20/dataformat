@@ -1,174 +1,127 @@
-"""Figure 5: HAD vs. Random Rotation — MSE vs. Tensor Dimension N.
+"""Figure 5: MXINT vs HAD+INT vs SQ — SQNR vs. Outlier Severity.
 
-Key research question: at what dimension N does cheap structured HAD
-achieve the same quantization quality as expensive random rotation?
+Main ablation figure for the research question:
+  "For handling outliers, should hardware use MXINT block-scale or HAD+INT?"
 
-X-axis: tensor dimension N (64 → 4096, power-of-2 steps).
-Y-axis: MSE after quantization.
+X-axis: Outlier severity (spiky multiplier, log scale).
+Y-axis: SQNR in dB (higher = better).
 
-Plotted curves:
-  - HAD + INT4       (structured butterfly, hardware-fixable)
-  - TurboQuant + INT4 (random ±1 diagonal, near-free)
-  - RandRot + INT4   (dense random orthogonal, expensive ROM)
-  - INT4 (no transform, baseline)
-  - MXFP4 (hardware-native reference)
+Two panels:
+  Left:  4-bit formats: INT4, MXINT4, NVFP4, NF4, HAD+INT4(C), HAD+INT4(T),
+                        SQ-Format, HAD+SQ, RandRot+INT4
+  Right: 8-bit formats: INT8, MXINT8, HAD+INT8(C), HAD+INT8(T), RandRot+INT8
+
+Key insight box: WHY HAD >= RandRot precision:
+  HAD spreads energy PERFECTLY UNIFORMLY — for a single-channel-outlier input,
+  every output element has the same absolute value (|H_ij| = 1/sqrt(N) * amplitude).
+  Random rotation produces approximately Normal output where the max element is
+  ~sqrt(log N) / sqrt(N) * amplitude — slightly larger than HAD's 1/sqrt(N).
+  This means HAD's quantizer scale is smaller → finer steps → better SQNR.
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 
-from formats.transforms.hadamard import hadamard_transform
-from formats.transforms.random_rotation import RandomRotationTransform, TurboQuantTransform
-from formats import build_all_formats
-from distributions.generators import channel_outliers, spiky_outliers
-from distributions.metrics import mse as compute_mse
-from visualization.style import save_fig, PALETTE, LINESTYLES
+from formats import build_all_formats, FOCUS_4BIT, FOCUS_8BIT
+from distributions.generators import spiky_outliers
+from distributions.metrics import snr_db
+from visualization.style import save_fig, PALETTE, MARKERS, LINESTYLES, get_color, get_marker, get_linestyle
 
 
-_DIM_SWEEP = [16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
-_BITS = 4
+_SWEEP_MULTS = [1, 2, 5, 10, 20, 50, 100, 200]
+_N = 1024
 _SEED = 42
 
-
-def _quantize_int(x: np.ndarray, bits: int) -> np.ndarray:
-    """Fast INT symmetric per-tensor quantize."""
-    q_max = 2 ** (bits - 1) - 1
-    absmax = np.max(np.abs(x))
-    if absmax == 0:
-        return x.copy()
-    scale = absmax / q_max
-    return np.clip(np.round(x / scale), -q_max, q_max).astype(np.float32) * scale
+# Formats to show in each panel
+_FMT_4BIT = ["INT4", "MXINT4", "NVFP4", "NF4",
+             "HAD+INT4(C)", "HAD+INT4(T)", "SQ-Format", "HAD+SQ", "RandRot+INT4"]
+_FMT_8BIT = ["INT8", "MXINT8", "HAD+INT8(C)", "HAD+INT8(T)", "RandRot+INT8"]
 
 
-def _mxfp4_simple(x: np.ndarray, block_size: int = 32) -> np.ndarray:
-    """Simplified MXFP4 for speed in dimension sweep."""
-    from formats.mxfp import MXFPFormat
-    fmt = MXFPFormat(element_bits=4, block_size=block_size)
-    return fmt.quantize(x)
+def _run_sweep(fmt_names: list, n: int = _N, seed: int = _SEED) -> dict:
+    """Sweep outlier severity and return {fmt_name: [sqnr_db, ...]} per multiplier."""
+    all_formats = build_all_formats(dim=n, seed=seed)
+    results = {f: [] for f in fmt_names if f in all_formats}
 
-
-def run_dim_sweep(
-    dist_name: str = "channel_outliers",
-    outlier_sigma: float = 50.0,
-    bits: int = _BITS,
-    seed: int = _SEED,
-    dims: list = _DIM_SWEEP,
-) -> dict:
-    """Run MSE sweep over dimensions for all transform types."""
-    results = {k: [] for k in [
-        "INT4 (no transform)",
-        "TurboQuant+INT4",
-        "HAD+INT4",
-        "RandRot+INT4",
-        "MXFP4",
-    ]}
-
-    for n in dims:
-        # Generate distribution of size n
-        if dist_name == "channel_outliers":
-            x, _ = channel_outliers(n=n, outlier_sigma=outlier_sigma, seed=seed)
-        else:
-            x, _ = spiky_outliers(n=n, spike_multiplier=outlier_sigma, seed=seed)
-
-        # INT4 no transform
-        x_q = _quantize_int(x, bits)
-        results["INT4 (no transform)"].append(compute_mse(x, x_q))
-
-        # TurboQuant
-        turbo = TurboQuantTransform(dim=n, seed=seed)
-        x_t = turbo.forward(x)
-        x_qt = _quantize_int(x_t, bits)
-        x_r = turbo.inverse(x_qt)
-        results["TurboQuant+INT4"].append(compute_mse(x, x_r))
-
-        # HAD
-        x_h = hadamard_transform(x, normalize=True)
-        x_qh = _quantize_int(x_h, bits)
-        from formats.transforms.hadamard import inverse_hadamard_transform
-        x_rh = inverse_hadamard_transform(x_qh, normalize=True)
-        results["HAD+INT4"].append(compute_mse(x, x_rh))
-
-        # RandRot
-        rr = RandomRotationTransform(dim=n, seed=seed)
-        x_rr = rr.forward(x)
-        x_qrr = _quantize_int(x_rr, bits)
-        x_rrr = rr.inverse(x_qrr)
-        results["RandRot+INT4"].append(compute_mse(x, x_rrr))
-
-        # MXFP4
-        try:
-            x_mx = _mxfp4_simple(x)
-            results["MXFP4"].append(compute_mse(x, x_mx))
-        except Exception:
-            results["MXFP4"].append(np.nan)
+    for mult in _SWEEP_MULTS:
+        x, _ = spiky_outliers(n=n, spike_multiplier=float(mult), seed=seed)
+        for fmt_name in results:
+            fmt = all_formats[fmt_name]
+            try:
+                x_q = fmt.quantize(x)
+                results[fmt_name].append(snr_db(x, x_q))
+            except Exception:
+                results[fmt_name].append(np.nan)
 
     return results
 
 
-def plot_had_vs_random(
-    out_dir: str = "results/figures", seed: int = 42
-):
-    """Plot Figure 5: HAD vs. Random Rotation MSE vs. Dimension."""
-    dims = _DIM_SWEEP
+def _plot_panel(ax, results: dict, title: str, fmt_names: list):
+    """Draw one panel of the SQNR sweep."""
+    for fmt_name in fmt_names:
+        if fmt_name not in results:
+            continue
+        vals = np.array(results[fmt_name], dtype=float)
+        c = get_color(fmt_name)
+        m = get_marker(fmt_name)
+        ls = get_linestyle(fmt_name)
+        ax.plot(_SWEEP_MULTS, vals,
+                color=c, linestyle=ls, marker=m, markersize=6,
+                linewidth=2.0, label=fmt_name, zorder=5)
 
-    # Run sweep on channel outliers (most challenging)
-    results = run_dim_sweep("channel_outliers", outlier_sigma=50.0, seed=seed, dims=dims)
+    # "Useful quality" threshold
+    ax.axhline(20, color="gray", linewidth=1.0, linestyle=":",
+               alpha=0.7, label="20 dB threshold")
 
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    ax.set_xscale("log")
+    ax.set_xticks(_SWEEP_MULTS)
+    ax.set_xticklabels([str(m) for m in _SWEEP_MULTS])
+    ax.set_xlabel("Spike Multiplier (×)", fontsize=11)
+    ax.set_ylabel("SQNR (dB)", fontsize=11)
+    ax.set_title(title, fontsize=12)
+    ax.legend(fontsize=8, loc="upper right", ncol=1)
 
-    curve_style = {
-        "INT4 (no transform)":  {"color": PALETTE["INT4"],          "ls": (0, (5,2,1,2)), "lw": 1.5},
-        "TurboQuant+INT4":      {"color": PALETTE["TurboQuant+INT4"], "ls": "-.", "lw": 2.0},
-        "HAD+INT4":             {"color": PALETTE["HAD+INT4"],        "ls": "-",  "lw": 2.5},
-        "RandRot+INT4":         {"color": PALETTE["RandRot+INT4"],    "ls": "--", "lw": 2.0},
-        "MXFP4":                {"color": PALETTE["MXFP4"],           "ls": ":",  "lw": 2.0},
-    }
 
-    for ax_idx, (ax, yscale) in enumerate(zip(axes, ["log", "linear"])):
-        for label, mse_vals in results.items():
-            style = curve_style.get(label, {})
-            ax.plot(
-                dims, mse_vals,
-                label=label,
-                color=style.get("color", "gray"),
-                linestyle=style.get("ls", "-"),
-                linewidth=style.get("lw", 1.5),
-                marker="o", markersize=5,
-            )
+def plot_had_vs_mxint(out_dir: str = "results/figures", seed: int = _SEED):
+    """Plot Figure 5: MXINT vs HAD+INT vs SQ — SQNR vs. Outlier Severity."""
+    results_4bit = _run_sweep(_FMT_4BIT, seed=seed)
+    results_8bit = _run_sweep(_FMT_8BIT, seed=seed)
 
-        ax.set_xscale("log", base=2)
-        ax.set_yscale(yscale)
-        ax.set_xlabel("Tensor Dimension N (log₂ scale)")
-        ax.set_ylabel("MSE (Quantization Error)")
-        ax.set_xticks(dims)
-        ax.set_xticklabels([str(d) for d in dims], rotation=30)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
-        if ax_idx == 0:
-            ax.set_title("Figure 5a: MSE vs. Dimension (log scale)\nChannel Outlier σ=50")
-        else:
-            ax.set_title("Figure 5b: MSE vs. Dimension (linear scale)\nFocus on large N convergence")
+    _plot_panel(
+        axes[0], results_4bit,
+        "4-bit Formats: SQNR vs. Outlier Severity\n(spiky_outliers, N=1024)",
+        _FMT_4BIT,
+    )
+    _plot_panel(
+        axes[1], results_8bit,
+        "8-bit Formats: SQNR vs. Outlier Severity\n(spiky_outliers, N=1024)",
+        _FMT_8BIT,
+    )
 
-        if ax_idx == 0:
-            ax.legend(loc="upper right", fontsize=9)
+    # Explanatory annotation on the 4-bit panel
+    axes[0].text(
+        0.03, 0.05,
+        "Why HAD ≥ RandRot precision:\n"
+        "HAD → all outputs same |magnitude|\n"
+        "→ tighter scale → finer steps.\n"
+        "RandRot → Gaussian output, slightly\n"
+        "larger max → coarser scale.",
+        transform=axes[0].transAxes,
+        fontsize=7.5, va="bottom", ha="left",
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="lightyellow",
+                  edgecolor="goldenrod", alpha=0.85),
+    )
 
-        # Annotation: HAD convergence point
-        had_vals = np.array(results["HAD+INT4"])
-        rr_vals = np.array(results["RandRot+INT4"])
-        converge_idx = np.argmin(np.abs(had_vals - rr_vals))
-        if converge_idx < len(dims):
-            ax.axvline(dims[converge_idx], color="green", linewidth=0.8,
-                       linestyle="--", alpha=0.5)
-            ax.annotate(
-                f"HAD≈RandRot\nN={dims[converge_idx]}",
-                xy=(dims[converge_idx], had_vals[converge_idx]),
-                xytext=(dims[converge_idx] * 1.5, had_vals[converge_idx] * 1.5),
-                fontsize=8, color="green",
-                arrowprops=dict(arrowstyle="->", color="green", lw=0.8),
-            )
+    fig.suptitle(
+        "Figure 5: MXINT vs. HAD+INT vs. SQ-Format — Quantization Quality vs. Outlier Severity",
+        fontsize=13, y=1.02,
+    )
 
-    save_fig(fig, "fig05_had_vs_random_rotation", out_dir)
+    save_fig(fig, "fig05_had_vs_mxint_comparison", out_dir)
     return fig
 
 
 if __name__ == "__main__":
-    plot_had_vs_random()
+    plot_had_vs_mxint()
