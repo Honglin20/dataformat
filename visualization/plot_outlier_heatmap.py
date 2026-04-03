@@ -85,7 +85,8 @@ def plot_outlier_heatmap(
     ordered_fmts = [f for f in _HEATMAP_FORMATS if f in df_log.index]
     df_log = df_log.loc[ordered_fmts]
 
-    fig, ax = plt.subplots(figsize=(14, 8))
+    with plt.rc_context({"figure.constrained_layout.use": False}):
+        fig, ax = plt.subplots(figsize=(14, 8))
 
     cmap = "RdYlGn_r"   # Red=high error, Green=low error
     sns.heatmap(
@@ -149,7 +150,7 @@ def plot_outlier_heatmap(
                 annotation_clip=False,
             )
 
-    plt.tight_layout()
+    fig.subplots_adjust(left=0.18, right=0.88, top=0.92, bottom=0.12)
     save_fig(fig, "fig02_outlier_sensitivity_heatmap", out_dir)
     return fig
 

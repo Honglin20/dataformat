@@ -47,24 +47,28 @@ def hadamard_transform(x: np.ndarray, normalize: bool = True) -> np.ndarray:
         pad_width = [(0, 0)] * (x.ndim - 1) + [(0, n - orig_len)]
         x = np.pad(x, pad_width)
 
-    x = x.astype(np.float32).copy()
+    work = x.astype(np.float64)  # float64 for numerical stability
 
-    # In-place Cooley-Tukey butterfly
+    # Vectorized butterfly using reshape trick.
+    # Bug note: x[..., j] returns a 0-d VIEW (not copy), so naive scalar
+    # assignment causes aliasing.  Reshape + slice copy avoids this entirely.
     h = 1
     while h < n:
-        for i in range(0, n, h * 2):
-            for j in range(i, i + h):
-                a = x[..., j]
-                b = x[..., j + h]
-                x[..., j] = a + b
-                x[..., j + h] = a - b
+        # Group elements into blocks of 2h, then butterfly first-half vs second-half
+        shape = work.shape            # (..., n)
+        work = work.reshape(shape[:-1] + (n // (2 * h), 2, h))
+        a = work[..., 0, :].copy()   # (..., n//(2h), h)  — explicit copy
+        b = work[..., 1, :].copy()
+        work[..., 0, :] = a + b
+        work[..., 1, :] = a - b
+        work = work.reshape(shape)
         h *= 2
 
     if normalize:
-        x = x / np.sqrt(n)
+        work = work / np.sqrt(n)
 
-    # Trim back to original length
-    return x[..., :orig_len]
+    # Trim back to original length and return as float32
+    return work[..., :orig_len].astype(np.float32)
 
 
 def inverse_hadamard_transform(x: np.ndarray, normalize: bool = True) -> np.ndarray:

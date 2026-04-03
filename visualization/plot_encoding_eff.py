@@ -103,7 +103,13 @@ def plot_encoding_efficiency(out_dir: str = "results/figures", seed: int = 42):
         bar_width = 0.35
 
         storage_vals = [data_dict[f]["storage_bits"] for f in fmt_names]
-        eff_vals = [data_dict[f]["effective_bits"] for f in fmt_names]
+        # Clip eff_bits to max storage_bits (inf for lossless formats → cap at 32)
+        eff_vals = [
+            min(data_dict[f]["effective_bits"], 32.0)
+            if np.isfinite(data_dict[f]["effective_bits"])
+            else data_dict[f]["storage_bits"]
+            for f in fmt_names
+        ]
 
         colors_storage = [get_color(f) for f in fmt_names]
         colors_eff = [get_color(f) for f in fmt_names]
@@ -117,16 +123,16 @@ def plot_encoding_efficiency(out_dir: str = "results/figures", seed: int = 42):
 
         # Efficiency ratio as text on bars
         for i, (s, e) in enumerate(zip(storage_vals, eff_vals)):
-            if np.isfinite(e) and s > 0:
+            if np.isfinite(e) and s > 0 and e > 0:
                 ratio = e / s
-                ax.text(x_pos[i] + bar_width / 2, e + 0.1,
+                ax.text(x_pos[i] + bar_width / 2, max(e, 0) + 0.1,
                         f"{ratio:.1%}", ha="center", va="bottom", fontsize=6.5, rotation=90)
 
-        # Reference line: perfect efficiency (eff_bits = storage_bits)
-        ax.plot([-0.5, len(fmt_names) - 0.5], [0, 0], "k--", linewidth=0, alpha=0)
-        for i, (s, _) in enumerate(zip(storage_vals, eff_vals)):
-            ax.plot([x_pos[i] - bar_width / 2, x_pos[i] + bar_width / 2],
-                    [s, s], "r--", linewidth=1.0, alpha=0.4)
+        # Reference line: storage_bits cap per format
+        for i, (s, e) in enumerate(zip(storage_vals, eff_vals)):
+            if np.isfinite(s) and s > 0:
+                ax.plot([x_pos[i] - bar_width / 2, x_pos[i] + bar_width / 2],
+                        [s, s], color="darkred", linewidth=1.0, alpha=0.5, linestyle="--")
 
         ax.set_xticks(x_pos)
         ax.set_xticklabels(fmt_names, rotation=45, ha="right", fontsize=8)
@@ -150,7 +156,7 @@ def plot_encoding_efficiency(out_dir: str = "results/figures", seed: int = 42):
                             data_dict[mxf]["storage_bits"] - 0.1),
                             fontsize=5.5, color="darkred", ha="center")
 
-    plt.tight_layout()
+    fig.subplots_adjust(left=0.06, right=0.98, top=0.92, bottom=0.22, wspace=0.25)
     save_fig(fig, "fig09_encoding_efficiency", out_dir)
     return fig
 

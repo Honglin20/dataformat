@@ -90,7 +90,8 @@ def plot_channel_heatmap(
     matrix = np.array([channel_mse[f] for f in fmt_list])
     log_matrix = np.log10(np.maximum(matrix, 1e-12))
 
-    fig, axes = plt.subplots(2, 1, figsize=(15, 10), gridspec_kw={"height_ratios": [1, 4]})
+    with plt.rc_context({"figure.constrained_layout.use": False}):
+        fig, axes = plt.subplots(2, 1, figsize=(15, 10), gridspec_kw={"height_ratios": [1, 4]})
 
     # ── Top panel: channel outlier indicator ─────────────────────────────────
     ax_top = axes[0]
@@ -139,7 +140,7 @@ def plot_channel_heatmap(
     ax_main.text(-3, 8.0, "Transform\nBased", fontsize=8, rotation=90,
                  va="center", ha="right", color="darkgreen", fontstyle="italic")
 
-    plt.tight_layout()
+    fig.subplots_adjust(left=0.15, right=0.95, top=0.94, bottom=0.08, hspace=0.05)
     save_fig(fig, "fig08_channel_heatmap", out_dir)
     return fig
 

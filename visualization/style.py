@@ -104,8 +104,8 @@ LINESTYLES = {
     "TurboQuant+INT8": "-.",
     "MXFP4":       ":",
     "MXFP8":       ":",
-    "INT4":        (0, (5, 2, 1, 2)),   # dash-dot-dot
-    "INT8":        (0, (5, 2, 1, 2)),
+    "INT4":        "--",   # plain dashed
+    "INT8":        "--",
 }
 
 # Format groupings for legend ordering
@@ -124,9 +124,9 @@ def get_color(fmt_name: str) -> str:
     """Get color for a format, falling back to a generated color."""
     if fmt_name in PALETTE:
         return PALETTE[fmt_name]
-    # Generate a color from a hash
-    h = hash(fmt_name) % 360
-    return f"hsl({h}, 70%, 50%)"
+    # Generate a deterministic hex color from hash (matplotlib-compatible)
+    h_val = (hash(fmt_name) & 0xFFFFFF)
+    return f"#{h_val:06x}"
 
 
 def get_marker(fmt_name: str) -> str:
