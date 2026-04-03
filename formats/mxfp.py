@@ -1,0 +1,134 @@
+"""MXFP4 and MXFP8: OCP Microscaling Floating-Point formats.
+
+OCP MX spec (Open Compute Project):
+  - Block size = 32 elements share one 8-bit E8M0 scale factor (biased exponent only).
+  - MXFP4: E2M1 element format (same encoding as NVFP4 E2M1).
+  - MXFP8: E4M3 or E5M2 element format.
+
+The shared scale is stored as an 8-bit exponent (E8M0, bias=127):
+  scale_value = 2^(scale_byte - 127)
+
+This yields:  x ≈ scale_value × element_fp_value
+"""
+
+import numpy as np
+from config import MX_BLOCK_SIZE
+
+# MXFP4 E2M1 positive levels (same as NVFP4)
+_E2M1_POS = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], dtype=np.float32)
+
+# MXFP8 E4M3 positive levels (143 finite values, we use clamp+round approach)
+_FP8_E4M3_MAX = 448.0
+_FP8_E5M2_MAX = 57344.0
+
+
+def _fp8_e4m3_quantize_scalar(v: float) -> float:
+    """Simulate FP8 E4M3 (4 exp bits, 3 mantissa bits, bias=7, no inf)."""
+    if v == 0.0:
+        return 0.0
+    sign = -1.0 if v < 0 else 1.0
+    v_abs = abs(v)
+    v_abs = min(v_abs, _FP8_E4M3_MAX)
+    # Find biased exponent
+    exp = int(np.floor(np.log2(v_abs + 1e-38)))
+    exp_biased = exp + 7  # bias=7
+    exp_biased = max(0, min(15, exp_biased))
+    # Compute mantissa (3 bits → 8 levels per exponent)
+    if exp_biased == 0:
+        mant = round(v_abs / 2**(-6) * 8) / 8 * 2**(-6)
+    else:
+        step = 2 ** (exp_biased - 7) / 8
+        mant_int = round((v_abs - 2 ** (exp_biased - 7)) / step)
+        mant_int = max(0, min(7, mant_int))
+        mant = 2 ** (exp_biased - 7) + mant_int * step
+    return sign * mant
+
+
+_fp8_e4m3_vec = np.vectorize(_fp8_e4m3_quantize_scalar)
+
+
+class MXFPFormat:
+    """Block-scaled microscaling FP format (MXFP4 or MXFP8).
+
+    Parameters
+    ----------
+    element_bits : int
+        4 for MXFP4 (E2M1), 8 for MXFP8 (E4M3).
+    block_size : int
+        Number of elements sharing one scale (default 32, OCP standard).
+    """
+
+    def __init__(self, element_bits: int = 4, block_size: int = MX_BLOCK_SIZE):
+        assert element_bits in (4, 8), "element_bits must be 4 or 8"
+        self.element_bits = element_bits
+        self.block_size = block_size
+        self.name = f"MXFP{element_bits}"
+        self.bits = element_bits
+
+    def _quantize_block(self, block: np.ndarray) -> np.ndarray:
+        """Quantize one block of elements with shared E8M0 scale."""
+        max_abs = np.max(np.abs(block))
+        if max_abs == 0:
+            return np.zeros_like(block)
+
+        # Compute E8M0 scale: largest power of 2 ≤ max_abs / max_element_val
+        if self.element_bits == 4:
+            max_elem_val = 6.0
+        else:  # 8-bit E4M3
+            max_elem_val = _FP8_E4M3_MAX
+
+        raw_scale = max_abs / max_elem_val
+        # Quantize scale to E8M0 (power of 2): floor to nearest power of 2
+        log2_scale = np.floor(np.log2(raw_scale + 1e-38))
+        scale = 2.0 ** log2_scale
+
+        # Scale and quantize elements
+        x_scaled = block / scale
+
+        if self.element_bits == 4:
+            sign = np.sign(x_scaled)
+            sign[sign == 0] = 1.0
+            x_abs = np.clip(np.abs(x_scaled), 0, 6.0)
+            dists = np.abs(x_abs[..., None] - _E2M1_POS)
+            idx = np.argmin(dists, axis=-1)
+            q = sign * _E2M1_POS[idx]
+        else:
+            q = _fp8_e4m3_vec(x_scaled)
+
+        return q * scale  # dequantized value
+
+    def quantize(self, x: np.ndarray, bits: int = None) -> np.ndarray:
+        x = x.astype(np.float32)
+        flat = x.ravel()
+        n = len(flat)
+        out = np.zeros_like(flat)
+
+        # Pad to multiple of block_size
+        pad = (-n) % self.block_size
+        padded = np.concatenate([flat, np.zeros(pad, dtype=np.float32)])
+
+        for i in range(0, len(padded), self.block_size):
+            block = padded[i:i + self.block_size]
+            out_block = self._quantize_block(block)
+            start = i
+            end = min(i + self.block_size, n)
+            out[start:end] = out_block[:end - start]
+
+        # Store bandwidth overhead info
+        n_blocks = int(np.ceil(n / self.block_size))
+        self._metadata_bits = n_blocks * 8  # 8-bit E8M0 per block
+        self._n_elements = n
+
+        return out.reshape(x.shape)
+
+    def dequantize(self, q: np.ndarray) -> np.ndarray:
+        return q.astype(np.float32)
+
+    def encoding_overhead(self) -> dict:
+        # Scale metadata: 8 bits per block of 32 elements = 0.25 bits/element
+        meta = 8 / self.block_size
+        return {
+            "data_bits_per_element": self.element_bits,
+            "metadata_bits_per_element": meta,
+            "bandwidth_amplification": (self.element_bits + meta) / self.element_bits,
+        }
