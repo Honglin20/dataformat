@@ -17,7 +17,21 @@ _NVFP4_ALL = np.concatenate([-_NVFP4_POS[::-1], _NVFP4_POS])  # symmetric around
 
 
 class NVFP4Format:
-    """Per-tensor NVFP4 quantization with a single FP32 scaling factor."""
+    """Per-tensor NVFP4 quantization with a single POT scaling factor.
+
+    Implementation note — two-level scaling in real hardware (NVIDIA Blackwell):
+      Level 1 (modelled here): per-tensor POT scale mapped to the nearest
+        power-of-two ≤ max(|x|)/6.0 — hardware-friendly (right-shift in HW).
+      Level 2 (NOT modelled): in the actual Blackwell FP4 tensor-core spec,
+        a per-group (16 elements) E8M0 scale is also stored, plus an outer
+        per-tensor BF16 "master scale" for flexibility.
+        The BF16 outer scale requires an FP16 multiplier in the decode path —
+        hardware-UNFRIENDLY compared to pure-POT INT formats.
+
+    Hardware cost implication: the BF16 outer scale adds one FP16 multiply
+    per 16-element group decode, costing ~0.08× extra area vs INT4 array.
+    This is captured in the area/energy model (plot_ppa_bubble.py).
+    """
     name = "NVFP4"
     bits = 4
 
@@ -53,5 +67,12 @@ class NVFP4Format:
         return q.astype(np.float32)
 
     def encoding_overhead(self) -> dict:
-        # 4 bits data, 32 bits scale per tensor (amortized → ~0 per element at large N)
-        return {"data_bits_per_element": 4, "metadata_bits_per_element": 0}
+        # 4 bits data; POT per-tensor scale (amortized to ~0 per element at large N).
+        # Real Blackwell: 8-bit E8M0 per 16-element group + BF16 outer scale.
+        # Group-level scale metadata ≈ 8/16 = 0.5 bits/element overhead.
+        return {
+            "data_bits_per_element": 4,
+            "metadata_bits_per_element": 0.5,  # E8M0 per 16 elements (real spec)
+            "bandwidth_amplification": 4.5 / 4,
+            "hw_note": "BF16 outer scale requires FP16 multiplier in decode path",
+        }

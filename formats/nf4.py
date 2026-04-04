@@ -43,9 +43,14 @@ class NF4Format:
         return q.astype(np.float32)
 
     def encoding_overhead(self) -> dict:
-        # 4 bits data + 1 FP32 scale per tensor (negligible metadata per element)
+        # 4 bits data + 1 FP32 scale per tensor (amortized → ~0 at large N).
+        # Hardware note: dequantization requires one FP32 multiply per element
+        # (q_norm × absmax). This is hardware-UNFRIENDLY: a dedicated FP32
+        # multiplier is needed in the decode path, unlike INT formats that use
+        # POT scales (arithmetic right-shift only).
         return {
             "data_bits_per_element": 4,
             "metadata_bits_per_element": 0,   # per-tensor scale amortized to ~0
             "bandwidth_amplification": 1.0,
+            "hw_note": "FP32 dequant multiply per element (hardware-unfriendly scale)",
         }

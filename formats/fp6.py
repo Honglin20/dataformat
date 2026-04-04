@@ -68,11 +68,19 @@ class FP6Format:
         return q.astype(np.float32)
 
     def encoding_overhead(self) -> dict:
-        # 6-bit data, no block metadata → 6 bits/element
-        # Hardware note: 6-bit requires bit-packing (3 elements per 2 bytes)
+        # 6-bit data, no block metadata → 6 bits/element.
+        # Hardware notes:
+        #   1. Bit-packing: 3 elements per 18 bits — decode requires a barrel
+        #      shifter to extract each 6-bit chunk from byte-aligned memory.
+        #   2. Scale factor `absmax / FP6_MAX` is an arbitrary FP32 division
+        #      (not a power-of-2 shift) — hardware-UNFRIENDLY. Requires an FP32
+        #      multiplier per element at decode, unlike INT4/8 POT scales.
+        #   3. No TC-FPx hardware in commodity silicon (as of 2024) — assumed
+        #      to execute on FP32 tensor cores or software emulation.
         return {
             "data_bits_per_element": 6,
             "metadata_bits_per_element": 0,
             "bandwidth_amplification": 1.0,
-            "packing_overhead": "3 elements per 18 bits (requires bit-shift at decode)",
+            "packing_overhead": "3 elements per 18 bits (barrel-shift decode)",
+            "hw_note": "FP32 scale multiply per element (hardware-unfriendly); bit-packing decode overhead",
         }

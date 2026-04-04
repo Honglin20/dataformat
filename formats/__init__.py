@@ -175,7 +175,10 @@ def build_all_formats(dim: int = 256, seed: int = 42) -> dict:
         "FP6":     FP6Format(),                   # secondary reference
 
         # ── SQ-Format (sparse-quantized, POT scales) ──────────────────────────
-        "SQ-Format": SQFormat(dense_bits=4, sparse_bits=8, sparsity_ratio=0.01),
+        # 4-bit dense variant: primary research format
+        "SQ-Format":     SQFormat(dense_bits=4, sparse_bits=8, sparsity_ratio=0.01),
+        # 8-bit dense variant: ablation to compare 4b vs 8b dense component
+        "SQ-Format(8b)": SQFormat(dense_bits=8, sparse_bits=8, sparsity_ratio=0.01),
 
         # ── HAD + INT per-channel (C) — PRIMARY focus format ─────────────────
         # Per-channel quantization after HAD: each output channel gets its own
@@ -256,6 +259,7 @@ FOCUS_8BIT = [
     "MXINT8",
     "HAD+INT8(C)",
     "HAD+INT8(T)",
+    "SQ-Format(8b)",
     "RandRot+INT8",
 ]
 

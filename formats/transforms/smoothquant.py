@@ -123,6 +123,13 @@ class SmoothQuantINTQuantizer:
         self._q_max = 2 ** (bits - 1) - 1
 
     def _int_quantize(self, x: np.ndarray) -> np.ndarray:
+        # Scale = absmax / q_max — this is NOT a power-of-two scale.
+        # Hardware note: q_max = 7 (INT4) or 127 (INT8), neither is a power of 2
+        # that allows a simple right-shift. In hardware this requires a FP32
+        # reciprocal multiply, making SmoothQuant's quantizer hardware-UNFRIENDLY
+        # compared to POT-scale INT variants. The smoothing scales (s_j) are
+        # pre-computed and stored as FP32 ROM values — each token requires one
+        # FP32 multiply per channel before INT quantization.
         if self.per_channel:
             # Per-channel (last dim) scale
             absmax = np.max(np.abs(x), axis=-1, keepdims=True)

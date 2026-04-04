@@ -32,8 +32,8 @@ _8BIT_FORMATS = [
     "FP6",          # included as Pareto middle-ground
     "SmoothQuant+INT8",
     "HAD+INT8",
+    "SQ-Format(8b)",    # 8-bit dense SQ variant (compare with SQ-Format 4-bit)
     "RandRot+INT8",
-    "TurboQuant+INT8",
     "FP32",         # reference
 ]
 
@@ -42,13 +42,12 @@ _4BIT_FORMATS = [
     "INT4",
     "NVFP4", "MXFP4", "MXINT4",
     "NF4",
-    "SQ-Format",
+    "SQ-Format",    # 4-bit dense, 8-bit sparse SQ
     "SmoothQuant+INT4",
     "HAD+INT4",
     "HAD+LUT4",
     "HAD+SQ",
     "RandRot+INT4",
-    "TurboQuant+INT4",
     "FP32",         # reference
 ]
 

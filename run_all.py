@@ -100,6 +100,8 @@ def run_phase5_visualizations(out_dir: str = "results/figures"):
          lambda: __import__("visualization.plot_encoding_eff", fromlist=["plot_encoding_efficiency"]).plot_encoding_efficiency(out_dir=out_dir)),
         ("Fig 10: Pipeline Breakdown",
          lambda: __import__("visualization.plot_pipeline", fromlist=["plot_pipeline_breakdown"]).plot_pipeline_breakdown(out_dir=out_dir)),
+        ("Fig 11: Hardware Area Breakdown",
+         lambda: __import__("visualization.plot_area", fromlist=["plot_area_breakdown"]).plot_area_breakdown(out_dir=out_dir)),
     ]
 
     for name, fn in figures:
