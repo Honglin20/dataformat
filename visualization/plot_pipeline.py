@@ -1,12 +1,11 @@
 """Figure 10: Hardware Pipeline Latency Breakdown.
 
-Stacked horizontal bar chart for key schemes:
-  Scheme A:  MXINT4 (block-scale integer array)
+Stacked horizontal bar chart for 8-bit key schemes
+(4-bit and 8-bit pipeline structure is the same; only latency scales differ):
   Scheme A8: MXINT8
-  Scheme B:  INT4 + Hadamard (FWHT butterfly unit)
-  Scheme B8: INT8 + Hadamard
-  Scheme B+: INT4 + Hadamard + SQ Gather/Scatter
-  SQ-only:   INT4 + SQ (no Hadamard, reference)
+  Scheme B8: INT8 + Hadamard (HAD+INT8)
+  Scheme B+: HAD + SQ Gather/Scatter (dual-prec INT dense‖sparse)
+  SQ-only:   SQ-Format (no Hadamard, dense INT4 ‖ sparse INT8)
 
 Stage latencies modelled at 45nm:
   Gate delay ≈ 40 ps, SRAM read ≈ 80 ps.
@@ -45,20 +44,8 @@ _CLR = {
 }
 
 # Each stage: (label, duration_ps, color)
-# Correctness notes embedded in comments per scheme.
+# 4-bit and 8-bit pipeline structure is the same; showing 8-bit as representative.
 _SCHEMES = [
-    {
-        "name": "A:  MXINT4",
-        "color_key": "MXINT4",
-        "stages": [
-            ("SRAM Load",            80,  _CLR["mem"]),
-            ("Block-Max Tree",       180, _CLR["scale"]),   # DOMINANT bottleneck
-            ("E8M0 Broadcast",        40, _CLR["scale"]),
-            ("INT4 Multiply",         80, _CLR["int_mul"]),
-            ("Accumulate",            80, _CLR["accum"]),
-            ("Write Back",            40, _CLR["write"]),
-        ],
-    },
     {
         "name": "A8: MXINT8",
         "color_key": "MXINT8",
@@ -72,20 +59,7 @@ _SCHEMES = [
         ],
     },
     {
-        "name": "B:  INT4 + Hadamard",
-        "color_key": "HAD+INT4(C)",
-        "stages": [
-            ("SRAM Load",            80, _CLR["mem"]),
-            ("HAD Butterfly",        40, _CLR["had"]),    # pipelined, overlaps load
-            ("POT Scale (INT4)",     40, _CLR["scale"]),
-            ("INT4 Multiply",        80, _CLR["int_mul"]),
-            ("Accumulate",           80, _CLR["accum"]),
-            ("Inv HAD (pipelined)",  40, _CLR["had"]),   # overlaps w/ next tile load
-            ("Write Back",           40, _CLR["write"]),
-        ],
-    },
-    {
-        "name": "B8: INT8 + Hadamard",
+        "name": "B8: HAD+INT8",
         "color_key": "HAD+INT8(C)",
         "stages": [
             ("SRAM Load",            80, _CLR["mem"]),
@@ -179,15 +153,15 @@ def plot_pipeline_breakdown(out_dir: str = "results/figures"):
     ax.set_yticklabels([s["name"] for s in _SCHEMES], fontsize=9.5)
     ax.invert_yaxis()
 
-    # Scheme-group separator and side labels (placed inside the axes via annotation)
-    ax.axhline(1.5, color="black", linewidth=1.2, alpha=0.45, linestyle="--")
+    # Scheme-group separator: after MXINT8 (row 0), before HAD+INT8 (row 1)
+    ax.axhline(0.5, color="black", linewidth=1.2, alpha=0.45, linestyle="--")
 
     # Side annotations using axes-fraction coordinates to avoid clipping
-    ax.annotate("Scheme A\n(MXINT)", xy=(0, 0.78), xycoords="axes fraction",
+    ax.annotate("MXINT\nParadigm", xy=(0, 0.875), xycoords="axes fraction",
                 fontsize=8.5, color="navy", fontweight="bold",
                 ha="right", va="center",
                 xytext=(-8, 0), textcoords="offset points")
-    ax.annotate("Scheme B\n(INT+HAD)", xy=(0, 0.37), xycoords="axes fraction",
+    ax.annotate("HAD+INT /\nSQ Paradigm", xy=(0, 0.375), xycoords="axes fraction",
                 fontsize=8.5, color="darkgreen", fontweight="bold",
                 ha="right", va="center",
                 xytext=(-8, 0), textcoords="offset points")
@@ -200,11 +174,12 @@ def plot_pipeline_breakdown(out_dir: str = "results/figures"):
 
     ax.set_xlabel("Pipeline Stage Latency (ps, critical path) — 45 nm", fontsize=11)
     ax.set_title(
-        "Figure 10: Hardware Pipeline Latency Breakdown\n"
+        "Figure 10: Hardware Pipeline Latency Breakdown (8-bit representative)\n"
         "Block-Max Comparator Tree (MXINT) = dominant bottleneck; "
-        "Hadamard butterfly pipelined & nearly free\n"
+        "Hadamard butterfly pipelined & nearly free  ·  "
+        "4-bit pipeline structure is identical\n"
         "B+/SQ-only: INT4 dense ‖ INT8 sparse MACs execute in parallel "
-        "(modelled as single 'dual prec' stage)",
+        "(single 'dual prec' stage)",
         fontsize=10,
     )
 

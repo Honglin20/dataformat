@@ -21,10 +21,10 @@ _CHANNEL_FORMATS = [
     "INT4",
     "MXFP4", "MXINT4", "NF4", "NVFP4",
     "SmoothQuant+INT4",
-    "HAD+INT4",
-    "HAD+LUT4",
+    "SQ-Format",
+    "HAD+INT4(C)",
+    "HAD+INT4(T)",
     "HAD+SQ",
-    "TurboQuant+INT4",
     "RandRot+INT4",
 ]
 

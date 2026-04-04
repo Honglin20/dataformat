@@ -48,7 +48,7 @@ _HW_PARAMS_4BIT: dict[str, dict] = {
     },
     "HAD+INT4(C)": {
         "area_rel": 1.15, "bw_bpe": 4.00, "energy_rel": 1.05,
-        "paradigm": "BFP",
+        "paradigm": "HAD+INT",
         "note": "FWHT butterfly add/sub only; POT scale (right-shift); no metadata BW",
     },
     "SQ-Format": {
@@ -100,7 +100,7 @@ _HW_PARAMS_8BIT: dict[str, dict] = {
     },
     "HAD+INT8(C)": {
         "area_rel": 2.38, "bw_bpe": 8.00, "energy_rel": 4.10,
-        "paradigm": "BFP",
+        "paradigm": "HAD+INT",
         "note": "INT8 FWHT butterfly; no metadata BW; POT scale",
     },
     "SQ-Format(8b)": {
@@ -128,10 +128,10 @@ _HW_PARAMS_8BIT: dict[str, dict] = {
 
 # Paradigm display properties
 _PARADIGM_STYLE: dict[str, dict] = {
-    "MXINT": {"color": "#1E40AF", "marker": "P", "zorder": 8, "label": "MXINT (block-scale INT)"},
-    "BFP":   {"color": "#15803D", "marker": "o", "zorder": 8, "label": "BFP / HAD+INT (Butterfly FP)"},
-    "SQ":    {"color": "#D97706", "marker": "8", "zorder": 8, "label": "SQ-Format (sparse quant)"},
-    "ref":   {"color": "#94A3B8", "marker": "s", "zorder": 4, "label": "Reference"},
+    "MXINT":   {"color": "#1E40AF", "marker": "P", "zorder": 8, "label": "MXINT (block-scale INT)"},
+    "HAD+INT": {"color": "#15803D", "marker": "o", "zorder": 8, "label": "HAD+INT (Butterfly FP / FWHT)"},
+    "SQ":      {"color": "#D97706", "marker": "8", "zorder": 8, "label": "SQ-Format (sparse quant)"},
+    "ref":     {"color": "#94A3B8", "marker": "s", "zorder": 4, "label": "Reference"},
 }
 
 # Bandwidth range for bubble scaling (clamp FP32 outlier)
@@ -193,14 +193,19 @@ def _draw_panel(
         # Label — only focus paradigms get prominent labels
         fontsize  = 9.0 if paradigm != "ref" else 7.5
         fontweight = "bold" if paradigm != "ref" else "normal"
-        label_text = fmt_name.replace("HAD+INT", "BFP").replace("(C)", "")
+        # Clean up label: remove (C) suffix for compactness but keep HAD+INT
+        label_text = fmt_name.replace("(C)", "").replace("(T)", "")
+        # Stagger offsets slightly to reduce overlap
+        x_off = 8 if paradigm != "ref" else 5
+        y_off = 6 if paradigm != "ref" else 3
         ax.annotate(
             label_text,
             (hw["area_rel"], sqnr),
-            xytext=(6, 4), textcoords="offset points",
+            xytext=(x_off, y_off), textcoords="offset points",
             fontsize=fontsize, color=style["color"],
             fontweight=fontweight,
-            bbox=dict(boxstyle="round,pad=0.15", fc="white", alpha=0.7, ec="none"),
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.85, ec=style["color"],
+                      linewidth=0.5 if paradigm != "ref" else 0),
         )
 
         if paradigm not in legend_handles:
@@ -209,13 +214,13 @@ def _draw_panel(
                 label=style["label"],
             )
 
-    # Ideal region
+    # Ideal region annotation (lower-left corner — away from legend)
     finite_sqnr = [q for q in quality.values() if np.isfinite(q)]
     if finite_sqnr:
         ax.annotate(
-            "← Ideal\n(small area,\nhigh quality,\nsmall bubble)",
-            xy=(0.99, 0.97), xycoords="axes fraction",
-            fontsize=7.5, color="darkgreen", style="italic", ha="right", va="top",
+            "Ideal: small area\nhigh quality\nsmall bubble →",
+            xy=(0.99, 0.04), xycoords="axes fraction",
+            fontsize=7.5, color="darkgreen", style="italic", ha="right", va="bottom",
             bbox=dict(boxstyle="round", fc="#e8f5e9", ec="darkgreen", alpha=0.6),
         )
 
@@ -231,14 +236,15 @@ def _draw_panel(
         ax.scatter([], [], s=_bubble_size(bw_val), c="gray", alpha=0.4, label=lbl)
 
     # Build legend — paradigm patches first, then BW sizes
-    paradigm_patches = [legend_handles[p] for p in ["MXINT", "BFP", "SQ", "ref"] if p in legend_handles]
+    paradigm_patches = [legend_handles[p] for p in ["MXINT", "HAD+INT", "SQ", "ref"] if p in legend_handles]
     bw_handles, bw_labels = ax.get_legend_handles_labels()
     ax.legend(
         handles=paradigm_patches + bw_handles,
         labels=[h.get_label() for h in paradigm_patches] + bw_labels,
-        loc="lower right", fontsize=7.5, ncol=1,
+        loc="upper left", fontsize=7.5, ncol=1,
         title="Paradigm  |  BW bubble", title_fontsize=7.5,
-        framealpha=0.9,
+        framealpha=0.95,
+        bbox_to_anchor=(0.01, 0.99),
     )
 
     ax.set_xlim(0, max(hw["area_rel"] for hw in hw_params.values()) * 1.12)
@@ -257,7 +263,7 @@ def plot_ppa_bubble(out_dir: str = "results/figures", seed: int = 42) -> plt.Fig
     q4 = _get_quality(_HW_PARAMS_4BIT, seed=seed)
     q8 = _get_quality(_HW_PARAMS_8BIT, seed=seed)
 
-    fig, (ax4, ax8) = plt.subplots(1, 2, figsize=(16, 7), constrained_layout=False)
+    fig, (ax4, ax8) = plt.subplots(1, 2, figsize=(18, 8), constrained_layout=False)
 
     _draw_panel(ax4, _HW_PARAMS_4BIT, q4, "4-bit: MXINT4 vs BFP (HAD+INT4) vs SQ-Format", bits=4)
     _draw_panel(ax8, _HW_PARAMS_8BIT, q8, "8-bit: MXINT8 vs BFP (HAD+INT8) vs SQ-Format(8b)", bits=8)

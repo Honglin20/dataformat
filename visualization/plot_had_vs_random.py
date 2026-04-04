@@ -35,7 +35,7 @@ _SEED = 42
 # Formats to show in each panel
 _FMT_4BIT = ["INT4", "MXINT4", "NVFP4", "NF4",
              "HAD+INT4(C)", "HAD+INT4(T)", "SQ-Format", "HAD+SQ", "RandRot+INT4"]
-_FMT_8BIT = ["INT8", "MXINT8", "HAD+INT8(C)", "HAD+INT8(T)", "RandRot+INT8"]
+_FMT_8BIT = ["INT8", "MXINT8", "HAD+INT8(C)", "HAD+INT8(T)", "SQ-Format(8b)", "RandRot+INT8"]
 
 
 def _run_sweep(fmt_names: list, n: int = _N, seed: int = _SEED) -> dict:

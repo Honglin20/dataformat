@@ -37,6 +37,7 @@ _PARETO_FORMATS = {
     "NVFP4":         (4,    0.0),
     "NF4":           (4,    0.0),
     "SQ-Format":     (4,    1.01),
+    "SQ-Format(8b)": (8,    1.01),
     "HAD+INT4(C)":   (4,    0.0),
     "HAD+INT4(T)":   (4,    0.0),
     "HAD+INT8(C)":   (8,    0.0),
