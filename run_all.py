@@ -1,42 +1,48 @@
 """Master pipeline: run all experiments and generate all figures.
 
 Usage:
-    python run_all.py [--fast] [--skip-hw] [--figs-only]
+    python run_all.py [--fast] [--skip-hw] [--figs-only] [--hw-focus]
 
 Options:
-    --fast      Use small N for quick sanity check (N=512).
-    --skip-hw   Skip hardware PPA evaluation (useful without PyRTL installed).
+    --fast      Use FAST_CONFIG (N=512, 5 formats, 3 distributions).
+    --skip-hw   Skip hardware PPA evaluation (useful without PyRTL).
     --figs-only Load pre-computed CSVs and regenerate figures only.
+    --hw-focus  Run only the 3-paradigm hardware-focus experiment
+                (MXINT / BFP / SQ-Format at 4-bit and 8-bit).
+
+To add a new format or distribution to the pipeline:
+    → Edit experiments/defaults.py only. No changes needed here.
 """
+
+from __future__ import annotations
 
 import os
 import sys
 import argparse
 import time
 
-# Allow imports from project root
 sys.path.insert(0, os.path.dirname(__file__))
-
 os.makedirs("results/figures", exist_ok=True)
 
 
-def run_phase1_check():
+# ── Phase helpers ─────────────────────────────────────────────────────────────
+
+def run_phase1_check() -> bool:
     """Quick smoke-test: verify all formats can quantize a test tensor."""
     print("\n[Phase 1] Format smoke-test...")
     import numpy as np
     from formats import build_all_formats
 
-    x = np.random.default_rng(42).normal(0, 1, 256).astype(np.float32)
-    x[0] = 50.0   # inject one outlier
+    x = np.random.default_rng(42).normal(0, 1, 256).astype("float32")
+    x[0] = 50.0
     formats = build_all_formats(dim=256, seed=42)
     failures = []
     for name, fmt in formats.items():
         try:
             q = fmt.quantize(x)
-            assert q.shape == x.shape, f"Shape mismatch: {q.shape} vs {x.shape}"
+            assert q.shape == x.shape
         except Exception as e:
             failures.append(f"  {name}: {e}")
-
     if failures:
         print(f"  WARNING: {len(failures)} formats failed:")
         for f in failures:
@@ -46,70 +52,71 @@ def run_phase1_check():
     return len(failures) == 0
 
 
-def run_phase2_robustness(n: int, seed: int):
-    """Phase 2: Distribution robustness experiment."""
-    print("\n[Phase 2] Distribution robustness experiment...")
+def run_phase2_robustness(config) -> dict:
+    """Phase 2: Distribution robustness sweep."""
+    print("\n[Phase 2] Distribution robustness sweep...")
     t0 = time.time()
     from experiments.robustness import run_robustness_experiment
-    df = run_robustness_experiment(n=n, seed=seed, verbose=True)
-    print(f"  Completed in {time.time()-t0:.1f}s. Shape: {df.shape}")
-    return df
-
-
-def run_phase3_ablation(n: int, seed: int):
-    """Phase 3: Bit-width ablation."""
-    print("\n[Phase 3] Bit-width ablation (4-bit vs 8-bit)...")
-    t0 = time.time()
-    from experiments.bitwidth_ablation import run_bitwidth_ablation
-    results = run_bitwidth_ablation(n=n, seed=seed, verbose=True)
-    print(f"  Completed in {time.time()-t0:.1f}s.")
+    results = run_robustness_experiment(config=config, verbose=True)
+    print(f"  Completed in {time.time() - t0:.1f}s.")
     return results
 
 
-def run_phase4_hardware():
+def run_phase3_ablation(config) -> dict:
+    """Phase 3: 4-bit vs 8-bit ablation."""
+    print("\n[Phase 3] 4-bit vs 8-bit ablation...")
+    t0 = time.time()
+    from experiments.bitwidth_ablation import run_bitwidth_ablation
+    results = run_bitwidth_ablation(config=config, verbose=True)
+    print(f"  Completed in {time.time() - t0:.1f}s.")
+    return results
+
+
+def run_phase4_hardware() -> dict:
     """Phase 4: Hardware PPA evaluation."""
     print("\n[Phase 4] Hardware PPA evaluation...")
     t0 = time.time()
     from hardware.ppa_evaluator import run_full_ppa_evaluation
     results = run_full_ppa_evaluation(use_yosys=True)
-    print(f"  Completed in {time.time()-t0:.1f}s.")
+    print(f"  Completed in {time.time() - t0:.1f}s.")
     return results
 
 
-def run_phase5_visualizations(out_dir: str = "results/figures"):
-    """Phase 5: Generate all 10 figures."""
+def run_phase5_visualizations(out_dir: str = "results/figures") -> list:
+    """Phase 5: Generate all figures."""
     print("\n[Phase 5] Generating all figures...")
     failures = []
 
     figures = [
-        ("Fig 1: Distribution Evolution",
-         lambda: __import__("visualization.plot_distributions", fromlist=["plot_distribution_evolution"]).plot_distribution_evolution(out_dir=out_dir)),
-        ("Fig 2: Outlier Sensitivity Heatmap",
-         lambda: __import__("visualization.plot_outlier_heatmap", fromlist=["plot_outlier_heatmap"]).plot_outlier_heatmap(out_dir=out_dir)),
+        ("Fig 1:  Distribution Evolution",
+         "visualization.plot_distributions", "plot_distribution_evolution"),
+        ("Fig 2:  Outlier Sensitivity Heatmap",
+         "visualization.plot_outlier_heatmap", "plot_outlier_heatmap"),
         ("Fig 3+4: Pareto Frontiers",
-         lambda: __import__("visualization.plot_pareto", fromlist=["plot_pareto_charts"]).plot_pareto_charts(out_dir=out_dir)),
-        ("Fig 5: MXINT vs HAD+INT vs SQ Comparison",
-         lambda: __import__("visualization.plot_had_vs_random", fromlist=["plot_had_vs_mxint"]).plot_had_vs_mxint(out_dir=out_dir)),
-        ("Fig 6: PPA Bubble Chart",
-         lambda: __import__("visualization.plot_ppa_bubble", fromlist=["plot_ppa_bubble"]).plot_ppa_bubble(out_dir=out_dir)),
-        ("Fig 7: Roofline Model",
-         lambda: __import__("visualization.plot_roofline", fromlist=["plot_roofline"]).plot_roofline(out_dir=out_dir)),
-        ("Fig 8: Channel Heatmap",
-         lambda: __import__("visualization.plot_channel_heatmap", fromlist=["plot_channel_heatmap"]).plot_channel_heatmap(out_dir=out_dir)),
-        ("Fig 9: Encoding Efficiency",
-         lambda: __import__("visualization.plot_encoding_eff", fromlist=["plot_encoding_efficiency"]).plot_encoding_efficiency(out_dir=out_dir)),
+         "visualization.plot_pareto", "plot_pareto_charts"),
+        ("Fig 5:  HAD vs MXINT vs SQ Comparison",
+         "visualization.plot_had_vs_random", "plot_had_vs_mxint"),
+        ("Fig 6:  PPA Bubble Chart (4b+8b panels)",
+         "visualization.plot_ppa_bubble", "plot_ppa_bubble"),
+        ("Fig 7:  Roofline Model",
+         "visualization.plot_roofline", "plot_roofline"),
+        ("Fig 8:  Channel Heatmap",
+         "visualization.plot_channel_heatmap", "plot_channel_heatmap"),
+        ("Fig 9:  Encoding Efficiency",
+         "visualization.plot_encoding_eff", "plot_encoding_efficiency"),
         ("Fig 10: Pipeline Breakdown",
-         lambda: __import__("visualization.plot_pipeline", fromlist=["plot_pipeline_breakdown"]).plot_pipeline_breakdown(out_dir=out_dir)),
-        ("Fig 11: Hardware Area Breakdown",
-         lambda: __import__("visualization.plot_area", fromlist=["plot_area_breakdown"]).plot_area_breakdown(out_dir=out_dir)),
+         "visualization.plot_pipeline", "plot_pipeline_breakdown"),
+        ("Fig 11: Hardware Area Breakdown (4b+8b panels)",
+         "visualization.plot_area", "plot_area_breakdown"),
     ]
 
-    for name, fn in figures:
+    for name, module_path, fn_name in figures:
         print(f"  Generating {name}...")
         try:
             t0 = time.time()
-            fn()
-            print(f"    Done ({time.time()-t0:.1f}s)")
+            mod = __import__(module_path, fromlist=[fn_name])
+            getattr(mod, fn_name)(out_dir=out_dir)
+            print(f"    Done ({time.time() - t0:.1f}s)")
         except Exception as e:
             print(f"    ERROR: {e}")
             failures.append(name)
@@ -121,22 +128,39 @@ def run_phase5_visualizations(out_dir: str = "results/figures"):
     return failures
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Run full outlier-format research pipeline.")
-    parser.add_argument("--fast", action="store_true",
-                        help="Use N=512 for quick sanity check")
-    parser.add_argument("--skip-hw", action="store_true",
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Outlier format study — full pipeline."
+    )
+    parser.add_argument("--fast",      action="store_true",
+                        help="Use FAST_CONFIG (N=512, minimal formats)")
+    parser.add_argument("--skip-hw",   action="store_true",
                         help="Skip hardware PPA evaluation")
     parser.add_argument("--figs-only", action="store_true",
                         help="Skip experiments, regenerate figures from saved CSVs")
+    parser.add_argument("--hw-focus",  action="store_true",
+                        help="Run hardware-focus experiment (MXINT/BFP/SQ only)")
     args = parser.parse_args()
 
-    N = 512 if args.fast else 4096
-    SEED = 42
+    # Pick config
+    if args.fast:
+        from experiments.defaults import FAST_CONFIG as exp_config
+    elif args.hw_focus:
+        from experiments.defaults import HW_FOCUS_CONFIG as exp_config
+    else:
+        from experiments.defaults import ABLATION_CONFIG as exp_config
+
+    robustness_config = exp_config
+    if not args.fast and not args.hw_focus:
+        from experiments.defaults import ROBUSTNESS_CONFIG
+        robustness_config = ROBUSTNESS_CONFIG
 
     print("=" * 60)
     print("Outlier Format Study — Full Pipeline")
-    print(f"N={N}, Seed={SEED}, fast={args.fast}")
+    print(f"Config: {exp_config.name}  N={exp_config.n_samples}  Seed={exp_config.seed}")
+    print(f"Groups: {[g.name for g in exp_config.groups]}")
     print("=" * 60)
 
     t_start = time.time()
@@ -146,21 +170,21 @@ def main():
         if not ok:
             print("Phase 1 failures detected — proceeding anyway.")
 
-        run_phase2_robustness(N, SEED)
-        run_phase3_ablation(N, SEED)
+        run_phase2_robustness(robustness_config)
+        run_phase3_ablation(exp_config)
 
         if not args.skip_hw:
             try:
                 run_phase4_hardware()
             except Exception as e:
                 print(f"  Phase 4 failed: {e}")
-                print("  Continuing with figures using analytical estimates...")
+                print("  Continuing with analytical estimates in figures...")
         else:
             print("\n[Phase 4] Skipped (--skip-hw).")
 
     run_phase5_visualizations()
 
-    print(f"\nTotal time: {time.time()-t_start:.1f}s")
+    print(f"\nTotal time: {time.time() - t_start:.1f}s")
     print(f"Results in: {os.path.abspath('results/')}")
 
 

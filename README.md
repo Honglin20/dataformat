@@ -82,63 +82,99 @@ pip install -r requirements.txt
 ### Run Full Pipeline
 
 ```bash
-# Full experiment: all formats × all distributions × all metrics + figures
+# Full experiment (all formats × 7 dists × all metrics + figures)
 python run_all.py
 
-# Fast mode (N=512 for quick validation)
+# Fast sanity check (N=512, 5 formats, 3 distributions)
 python run_all.py --fast
 
-# Skip hardware PPA evaluation (faster)
+# Hardware-focus only (MXINT / BFP / SQ at 4-bit and 8-bit)
+python run_all.py --hw-focus
+
+# Skip hardware PPA evaluation
 python run_all.py --skip-hw
 
-# Generate figures only (skip experiments)
+# Regenerate figures only (no experiments)
 python run_all.py --figs-only
 ```
 
-### Programmatic API
+### Programmatic API — Experiment Framework
+
+The experiment system is fully config-driven. **To add a new format or distribution,
+edit `experiments/defaults.py` only** — no other files need to change.
+
+```python
+from experiments.config import ExperimentConfig, FormatGroup, DistributionConfig
+from experiments.runner import ExperimentRunner
+from experiments.defaults import ABLATION_CONFIG, ABLATION_DISTRIBUTIONS
+from formats import build_all_formats
+
+# ── Run the default ablation (4-bit + 8-bit, 7 distributions) ────────────────
+registry = build_all_formats(dim=256, seed=42)
+runner   = ExperimentRunner(ABLATION_CONFIG, registry)
+results  = runner.run()   # -> {"4bit": pd.DataFrame, "8bit": pd.DataFrame}
+
+# ── Define a custom experiment on-the-fly ────────────────────────────────────
+from distributions.generators import channel_outliers
+
+my_config = ExperimentConfig(
+    name="my_study",
+    groups=[
+        FormatGroup("4bit", "4-bit", ["MXINT4", "HAD+INT4(C)", "SQ-Format"], bits=4),
+        FormatGroup("8bit", "8-bit", ["MXINT8", "HAD+INT8(C)", "SQ-Format(8b)"], bits=8),
+    ],
+    distributions=[
+        DistributionConfig("Chan50", lambda n,s: channel_outliers(n, outlier_sigma=50, seed=s), ["channel"]),
+    ],
+    n_samples=2048,
+)
+results = ExperimentRunner(my_config, registry).run()
+
+# ── Filter by tag, add a group, or subset formats ────────────────────────────
+outlier_cfg  = ABLATION_CONFIG.filter_distributions("outlier")   # only outlier dists
+hw_cfg       = ABLATION_CONFIG.subset_formats(["MXINT4", "HAD+INT4(C)", "SQ-Format"])
+```
+
+### Programmatic API — Formats
 
 ```python
 from formats import build_all_formats
 import numpy as np
 
-# Build all 24 formats
 formats = build_all_formats(dim=256, seed=42)
-
-# Quantize a tensor
 x = np.random.randn(1024).astype(np.float32)
-x_q = formats["MXFP4"].quantize(x)
-mse = float(np.mean((x - x_q) ** 2))
 
-# Compare SQ-Format at 4-bit vs 8-bit dense component
-sq4 = formats["SQ-Format"].quantize(x)     # dense_bits=4, sparse_bits=8
-sq8 = formats["SQ-Format(8b)"].quantize(x) # dense_bits=8, sparse_bits=8
+# Three key paradigms at 4-bit
+x_mxint  = formats["MXINT4"].quantize(x)
+x_bfp    = formats["HAD+INT4(C)"].quantize(x)   # BFP: Butterfly FP / HAD+INT
+x_sq     = formats["SQ-Format"].quantize(x)
 
-# Use transforms directly
+# SQ-Format: 4-bit dense vs 8-bit dense ablation
+x_sq4    = formats["SQ-Format"].quantize(x)      # dense_bits=4
+x_sq8    = formats["SQ-Format(8b)"].quantize(x)  # dense_bits=8
+
+# Hardware-friendly HAD transform (integer butterfly, POT inverse)
 from formats.transforms.hadamard import hadamard_transform
-x_had = hadamard_transform(x, normalize=False)  # integer-valued, HW-friendly
+x_had = hadamard_transform(x, normalize=False)
 ```
 
 ### Individual Figures
 
 ```python
-from visualization.plot_outlier_heatmap import plot_outlier_heatmap
-from visualization.plot_channel_heatmap import plot_channel_heatmap
-from visualization.plot_encoding_eff import plot_encoding_efficiency
-from visualization.plot_area import plot_area_breakdown       # Fig 11 (new)
+from visualization.plot_ppa_bubble import plot_ppa_bubble    # Fig 6 (4b+8b panels)
+from visualization.plot_area import plot_area_breakdown      # Fig 11 (4b+8b panels)
+from visualization.plot_pipeline import plot_pipeline_breakdown  # Fig 10
 
-plot_outlier_heatmap(out_dir="results/figures")
-plot_channel_heatmap(out_dir="results/figures")
-plot_encoding_efficiency(out_dir="results/figures")
+plot_ppa_bubble(out_dir="results/figures")
 plot_area_breakdown(out_dir="results/figures")
+plot_pipeline_breakdown(out_dir="results/figures")
 ```
 
 ### Hardware Evaluation
 
 ```python
 from hardware.ppa_evaluator import run_full_ppa_evaluation
-
 results = run_full_ppa_evaluation(array_rows=16, array_cols=16)
-# Returns PPA breakdown for Scheme A (MXFP), Scheme B (INT+HAD), Scheme B+ (INT+HAD+SQ)
 ```
 
 ---
@@ -375,59 +411,80 @@ Memory → [SQ Gather (1%)] → [FWHT] → [INT4 MAC ‖ INT8 MAC (parallel)] �
 ```
 dataformat/
 ├── config.py                    # Global constants (energy model, NF4 levels, roofline params)
-├── run_all.py                   # Master pipeline (--fast, --skip-hw, --figs-only)
+├── run_all.py                   # Master pipeline (--fast | --hw-focus | --skip-hw | --figs-only)
 ├── requirements.txt
 │
 ├── formats/                     # All 24 quantization formats
 │   ├── __init__.py              # build_all_formats(dim, seed) → dict[str, QuantFormat]
-│   │                            # Includes SQ-Format (4b dense) and SQ-Format(8b) (8b dense)
+│   │                            # SQ-Format (4b) + SQ-Format(8b) both registered
 │   ├── baseline.py              # FP32, BF16
-│   ├── mxfp.py                  # MXFP4, MXFP8 (E8M0 block scale — HW-friendly)
-│   ├── mxint.py                 # MXINT4, MXINT8 (E8M0 block scale — HW-friendly)
-│   ├── nvfp4.py                 # NVFP4 (Blackwell E2M1; BF16 outer scale ⚠️ HW-unfriendly)
-│   ├── nf4.py                   # NF4 (QLoRA; FP32 absmax dequant ⚠️ HW-unfriendly)
-│   ├── fp6.py                   # FP6 E3M2 (FP32 scale + barrel-shift decode ⚠️ HW-unfriendly)
-│   ├── sq_format.py             # SQ-Format (configurable dense_bits/sparse_bits; POT scales ✓)
+│   ├── mxfp.py                  # MXFP4, MXFP8 — E8M0 block scale, HW-friendly ✓
+│   ├── mxint.py                 # MXINT4, MXINT8 — E8M0 block scale, HW-friendly ✓
+│   ├── nvfp4.py                 # NVFP4 — BF16 outer scale, HW-unfriendly ⚠️
+│   ├── nf4.py                   # NF4 — FP32 absmax dequant mul, HW-unfriendly ⚠️
+│   ├── fp6.py                   # FP6 E3M2 — FP32 scale + barrel-shift decode ⚠️
+│   ├── sq_format.py             # SQ-Format — configurable dense/sparse bits, POT scales ✓
 │   └── transforms/
-│       ├── hadamard.py          # FWHT butterfly (add/sub only; POT inverse; HW-friendly ✓)
-│       ├── random_rotation.py   # Dense N×N orthogonal rotation (ROM) + TurboQuant (±1 XOR)
-│       └── smoothquant.py       # Per-channel algebraic scale (FP32 ROM multiplies ⚠️)
+│       ├── hadamard.py          # FWHT butterfly — add/sub only, POT inverse, HW-friendly ✓
+│       ├── random_rotation.py   # Dense N×N rotation (ROM) + TurboQuant (±1 XOR)
+│       └── smoothquant.py       # SmoothQuant — FP32 ROM channel scales ⚠️
 │
-├── distributions/               # Test input generators
-│   ├── generators.py            # gaussian, spiky_outliers, channel_outliers, + 4 more
-│   └── metrics.py               # mse, sqnr, kl_divergence, effective_bits, bops
+├── distributions/               # Synthetic input generators
+│   ├── generators.py            # gaussian, laplace, student_t, bimodal,
+│   │                            # channel_outliers, spiky_outliers, log_normal
+│   └── metrics.py               # evaluate_all(): mse, snr_db, kl_div, max_ae, eff_bits
 │
-├── experiments/                 # Experiment runners
-│   ├── robustness.py            # Format × distribution × metric sweep
-│   └── bitwidth_ablation.py     # 4-bit vs 8-bit regime study
-│                                # Includes SQ-Format(8b) in 8-bit regime for direct comparison
+├── experiments/                 # ── Extensible experiment framework ──────────────────────
+│   ├── config.py                # ExperimentConfig, FormatGroup, DistributionConfig
+│   ├── runner.py                # ExperimentRunner(config, registry) — no hardcoded lists
+│   ├── defaults.py              # ★ Edit here to add formats/distributions/experiments ★
+│   │                            # ABLATION_CONFIG, ROBUSTNESS_CONFIG, HW_FOCUS_CONFIG,
+│   │                            # FAST_CONFIG, all FormatGroup + DistributionConfig objects
+│   ├── robustness.py            # Thin wrapper around ExperimentRunner
+│   └── bitwidth_ablation.py     # Thin wrapper around ExperimentRunner
 │
 ├── hardware/                    # Hardware cost models
 │   ├── energy_model.py          # Horowitz 45nm energy model (pJ/op)
 │   ├── roofline.py              # Arithmetic intensity + roofline analysis
-│   ├── bop_counter.py           # Bit operation counting for matmul + transforms
-│   ├── ppa_evaluator.py         # Scheme A/B/B+ PPA via PyRTL + NAND2 analytical model
-│   └── pyrtl_modules/           # PyRTL RTL definitions for each arithmetic unit
+│   ├── bop_counter.py           # Bit operation counting
+│   ├── ppa_evaluator.py         # Scheme A/B/B+ PPA (PyRTL + NAND2 analytical)
+│   └── pyrtl_modules/           # PyRTL RTL definitions per arithmetic unit
 │
 ├── visualization/               # Figure generators (Figures 1–11)
 │   ├── style.py                 # Global matplotlib style, PALETTE, MARKERS
-│   ├── plot_distributions.py    # Fig 1: distribution evolution
-│   ├── plot_outlier_heatmap.py  # Fig 2: precision-outlier sensitivity heatmap
-│   ├── plot_pareto.py           # Fig 3 & 4: Pareto frontiers
-│   ├── plot_had_vs_random.py    # Fig 5: HAD vs random rotation ablation
-│   ├── plot_ppa_bubble.py       # Fig 6: PPA bubble (bubble = bandwidth b/elem)
-│   ├── plot_roofline.py         # Fig 7: roofline model
-│   ├── plot_channel_heatmap.py  # Fig 8: per-channel error heatmap
-│   ├── plot_encoding_eff.py     # Fig 9: encoding efficiency
-│   ├── plot_pipeline.py         # Fig 10: pipeline latency (corrected parallel dual-prec model)
-│   └── plot_area.py             # Fig 11: hardware area breakdown (NEW)
+│   ├── plot_distributions.py    # Fig 1
+│   ├── plot_outlier_heatmap.py  # Fig 2
+│   ├── plot_pareto.py           # Fig 3 & 4
+│   ├── plot_had_vs_random.py    # Fig 5
+│   ├── plot_ppa_bubble.py       # Fig 6: 2-panel (4-bit | 8-bit), MXINT/BFP/SQ focus
+│   ├── plot_roofline.py         # Fig 7
+│   ├── plot_channel_heatmap.py  # Fig 8
+│   ├── plot_encoding_eff.py     # Fig 9
+│   ├── plot_pipeline.py         # Fig 10: corrected parallel dual-prec execution model
+│   └── plot_area.py             # Fig 11: 2-panel (4-bit | 8-bit), MXINT/BFP/SQ focus
 │
 ├── tests/
 │   └── test_formats.py          # Unit tests
 │
 └── results/
-    └── figures/                 # Generated PNG + PDF figures (Fig 1–11)
+    └── figures/                 # Generated PNG + PDF (Fig 1–11)
 ```
+
+### Adding a New Format — Step by Step
+
+1. Implement in `formats/your_format.py` and register in `formats/__init__.py → build_all_formats()`.
+2. Add name to the relevant `FormatGroup` in `experiments/defaults.py`.
+3. Add HW params to `visualization/plot_ppa_bubble.py → _HW_PARAMS_4BIT / _HW_PARAMS_8BIT`.
+4. Add area entry to `visualization/plot_area.py → _SCHEMES_4BIT / _SCHEMES_8BIT`.
+
+**No changes to `runner.py`, `robustness.py`, `bitwidth_ablation.py`, or `run_all.py`.**
+
+### Adding a New Distribution — Step by Step
+
+1. Implement generator in `distributions/generators.py`.
+2. Add `DistributionConfig` entry to `ABLATION_DISTRIBUTIONS` or `ROBUSTNESS_DISTRIBUTIONS` in `experiments/defaults.py`.
+
+**No other changes needed.**
 
 ---
 
