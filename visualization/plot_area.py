@@ -187,10 +187,11 @@ def plot_area_breakdown(out_dir: str = "results/figures") -> plt.Figure:
 
     fig.suptitle(
         "Figure 11: Hardware Area Breakdown per Scheme\n"
+        "HAD+INT (C) and (T) share identical hardware — (C)/(T) scale granularity "
+        "does not change silicon area  ·  ▶ = focus paradigm (MXINT / HAD+INT / SQ)\n"
         "(*) NVFP4: BF16 outer scale → FP16 decode mul (hardware-unfriendly)  "
-        "(**) NF4: FP32 absmax dequant mul per element (hardware-unfriendly)\n"
-        "▶ = focus paradigm (MXINT / BFP / SQ)",
-        fontsize=9.5,
+        "(**) NF4: FP32 absmax dequant mul per element (hardware-unfriendly)",
+        fontsize=9.0,
     )
     fig.subplots_adjust(left=0.22, right=0.97, top=0.91, bottom=0.14, hspace=0.38)
 

@@ -11,7 +11,7 @@ Key comparison: MXINT4 (pays +0.25 bpe overhead) vs HAD+INT4(C) (zero overhead).
 import numpy as np
 import matplotlib.pyplot as plt
 
-from distributions.generators import channel_outliers, gaussian
+from distributions.generators import gaussian
 from distributions.metrics import effective_bits
 from formats import build_all_formats
 from visualization.style import save_fig, get_color
@@ -31,16 +31,29 @@ _EFF_FORMATS = [
     ("HAD+INT4(C)",    4, 0.00),
     ("HAD+INT4(T)",    4, 0.00),
     ("HAD+INT8(C)",    8, 0.00),
+    ("HAD+INT8(T)",    8, 0.00),
     ("HAD+SQ",         4, 1.01),
     ("RandRot+INT4",   4, 0.00),
     ("RandRot+INT8",   8, 0.00),
 ]
 
 
-def compute_encoding_efficiency(n: int = 4096, seed: int = 42) -> tuple:
+def compute_encoding_efficiency(seed: int = 42) -> tuple:
+    """Compute encoding efficiency for easy (Gaussian) and hard (2D row-outlier) cases.
+
+    The hard case uses a 2D (16×256) tensor with row 0 as outlier (σ=50),
+    so HAD+INT(C) per-row scale and HAD+INT(T) global scale produce distinct results.
+    """
     all_formats = build_all_formats(dim=256, seed=seed)
-    x_easy, _ = gaussian(n=n, sigma=1.0, seed=seed)
-    x_hard, _ = channel_outliers(n=n, outlier_sigma=50.0, seed=seed)
+    rng = np.random.default_rng(seed)
+
+    # Easy: 1D Gaussian (C) and (T) are identical here — shows baseline
+    x_easy, _ = gaussian(n=4096, sigma=1.0, seed=seed)
+
+    # Hard: 2D row-outlier tensor — row 0 has σ=50, rows 1-15 are N(0,1)
+    # HAD+INT(C) adapts per-row; HAD+INT(T) uses global scale dominated by row 0
+    x_hard_2d = rng.normal(0, 1, (16, 256)).astype(np.float32)
+    x_hard_2d[0, :] = rng.normal(0, 50.0, 256).astype(np.float32)
 
     easy, hard = {}, {}
     for fmt_name, nominal_bits, meta_bpe in _EFF_FORMATS:
@@ -48,20 +61,25 @@ def compute_encoding_efficiency(n: int = 4096, seed: int = 42) -> tuple:
             continue
         fmt = all_formats[fmt_name]
         storage_bits = nominal_bits + meta_bpe
-        for store_dict, x in [(easy, x_easy), (hard, x_hard)]:
-            try:
-                x_q = fmt.quantize(x)
-                eff = effective_bits(x, x_q)
-                if np.isfinite(eff):
-                    eff = min(eff, storage_bits * 1.05)
-                else:
-                    eff = 0.0
-            except Exception:
-                eff = 0.0
-            store_dict[fmt_name] = {
-                "storage_bits": storage_bits,
-                "effective_bits": eff,
-            }
+
+        # Easy: 1D tensor
+        try:
+            x_q = fmt.quantize(x_easy)
+            eff = effective_bits(x_easy, x_q)
+            eff = min(eff, storage_bits * 1.05) if np.isfinite(eff) else 0.0
+        except Exception:
+            eff = 0.0
+        easy[fmt_name] = {"storage_bits": storage_bits, "effective_bits": eff}
+
+        # Hard: 2D tensor (distinguishes C from T)
+        try:
+            x_q2 = fmt.quantize(x_hard_2d)
+            eff2 = effective_bits(x_hard_2d.ravel(), x_q2.ravel())
+            eff2 = min(eff2, storage_bits * 1.05) if np.isfinite(eff2) else 0.0
+        except Exception:
+            eff2 = 0.0
+        hard[fmt_name] = {"storage_bits": storage_bits, "effective_bits": eff2}
+
     return easy, hard
 
 
@@ -113,7 +131,7 @@ def _draw_panel(ax, data: dict, fmt_names: list, title: str):
 
 
 def plot_encoding_efficiency(out_dir: str = "results/figures", seed: int = 42):
-    """Plot Figure 9: Format Encoding Efficiency."""
+    """Plot Figure 9: Format Encoding Efficiency (storage vs effective bits)."""
     easy, hard = compute_encoding_efficiency(seed=seed)
     fmt_names = [f for f, _, _ in _EFF_FORMATS if f in easy]
 

@@ -53,8 +53,10 @@ _FORMATS = [
     ("INT4",         _ai(4,  4),    "int4",  "INT4"),
     ("MXINT8",       _ai(8.25, 8.25), "int8", "MXINT8"),
     ("MXINT4",       _ai(4.25, 4.25), "int4", "MXINT4"),
-    ("HAD+INT8(C)",  _ai(8, 8),     "int8",  "HAD+INT8(C)"),   # same bytes, more FLOPs
-    ("HAD+INT4(C)",  _ai(4, 4),     "int4",  "HAD+INT4(C)"),   # same bytes, more FLOPs
+    ("HAD+INT8(C)",  _ai(8, 8),     "int8",  "HAD+INT8(C)"),   # per-row scale; same bytes
+    ("HAD+INT8(T)",  _ai(8, 8),     "int8",  "HAD+INT8(T)"),   # global scale; same bytes, same AI
+    ("HAD+INT4(C)",  _ai(4, 4),     "int4",  "HAD+INT4(C)"),   # per-row scale; same bytes
+    ("HAD+INT4(T)",  _ai(4, 4),     "int4",  "HAD+INT4(T)"),   # global scale; same bytes, same AI
     ("SQ-Format",    _ai(5.01, 4),  "int4",  "SQ-Format"),     # ~5 effective bits
 ]
 
@@ -105,7 +107,9 @@ def plot_roofline(out_dir: str = "results/figures"):
         "MXINT8":      _ai(8.25, 8.25),
         "MXINT4":      _ai(4.25, 4.25),
         "HAD+INT8(C)": ai_had8,
+        "HAD+INT8(T)": ai_had8,   # same AI as (C); quality differs (see SQNR figs)
         "HAD+INT4(C)": ai_had4,
+        "HAD+INT4(T)": ai_had4,   # same AI as (C); quality differs (see SQNR figs)
         "SQ-Format":   _ai(5.01, 4),
     }
     format_peak_key = {
@@ -115,7 +119,9 @@ def plot_roofline(out_dir: str = "results/figures"):
         "MXINT8":      "int8",
         "MXINT4":      "int4",
         "HAD+INT8(C)": "int8",
+        "HAD+INT8(T)": "int8",
         "HAD+INT4(C)": "int4",
+        "HAD+INT4(T)": "int4",
         "SQ-Format":   "int4",
     }
 

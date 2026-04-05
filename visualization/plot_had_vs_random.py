@@ -23,13 +23,19 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from formats import build_all_formats, FOCUS_4BIT, FOCUS_8BIT
-from distributions.generators import spiky_outliers
 from distributions.metrics import snr_db
 from visualization.style import save_fig, PALETTE, MARKERS, LINESTYLES, get_color, get_marker, get_linestyle
 
 
 _SWEEP_MULTS = [1, 2, 5, 10, 20, 50, 100, 200]
-_N = 1024
+# 2D tensor shape: (batch=16, features=64) = 1024 total elements.
+# Row-level outliers: row 0 is multiplied by the sweep multiplier.
+# This is the minimal setup to distinguish HAD+INT(C) from HAD+INT(T):
+#   - (C) per-row scale: row 0 gets a large scale; rows 1-15 keep small scales → clean rows stay precise
+#   - (T) per-tensor scale: global scale dominated by row 0 → all rows lose precision
+_BATCH = 16
+_FEATURES = 64   # power of 2; HAD transform acts on last axis
+_N = _BATCH * _FEATURES  # 1024
 _SEED = 42
 
 # Formats to show in each panel
@@ -38,18 +44,30 @@ _FMT_4BIT = ["INT4", "MXINT4", "NVFP4", "NF4",
 _FMT_8BIT = ["INT8", "MXINT8", "HAD+INT8(C)", "HAD+INT8(T)", "SQ-Format(8b)", "RandRot+INT8"]
 
 
-def _run_sweep(fmt_names: list, n: int = _N, seed: int = _SEED) -> dict:
-    """Sweep outlier severity and return {fmt_name: [sqnr_db, ...]} per multiplier."""
-    all_formats = build_all_formats(dim=n, seed=seed)
+def _make_2d_outlier(mult: float, seed: int) -> np.ndarray:
+    """2D (batch=16, features=64) tensor where row 0 has `mult`× magnitude.
+
+    HAD+INT(C) uses per-row scale → adapts to outlier row independently.
+    HAD+INT(T) uses global scale → normal rows (1-15) lose precision.
+    """
+    rng = np.random.default_rng(seed)
+    x = rng.normal(0, 1, (_BATCH, _FEATURES)).astype(np.float32)
+    x[0, :] *= float(mult)
+    return x
+
+
+def _run_sweep(fmt_names: list, seed: int = _SEED) -> dict:
+    """Sweep outlier severity; use 2D row-outlier tensor so (C) ≠ (T)."""
+    all_formats = build_all_formats(dim=_FEATURES, seed=seed)
     results = {f: [] for f in fmt_names if f in all_formats}
 
     for mult in _SWEEP_MULTS:
-        x, _ = spiky_outliers(n=n, spike_multiplier=float(mult), seed=seed)
+        x = _make_2d_outlier(mult, seed)
         for fmt_name in results:
             fmt = all_formats[fmt_name]
             try:
                 x_q = fmt.quantize(x)
-                results[fmt_name].append(snr_db(x, x_q))
+                results[fmt_name].append(snr_db(x.ravel(), x_q.ravel()))
             except Exception:
                 results[fmt_name].append(np.nan)
 
@@ -91,12 +109,14 @@ def plot_had_vs_mxint(out_dir: str = "results/figures", seed: int = _SEED):
 
     _plot_panel(
         axes[0], results_4bit,
-        "4-bit Formats: SQNR vs. Outlier Severity\n(spiky_outliers, N=1024)",
+        "4-bit: SQNR vs. Outlier Row Magnitude\n"
+        "(2D 16×64, row 0 = outlier; (C)=per-row scale, (T)=global scale)",
         _FMT_4BIT,
     )
     _plot_panel(
         axes[1], results_8bit,
-        "8-bit Formats: SQNR vs. Outlier Severity\n(spiky_outliers, N=1024)",
+        "8-bit: SQNR vs. Outlier Row Magnitude\n"
+        "(2D 16×64, row 0 = outlier; (C)=per-row scale, (T)=global scale)",
         _FMT_8BIT,
     )
 

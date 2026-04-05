@@ -18,7 +18,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from distributions.generators import channel_outliers
 from distributions.metrics import snr_db
 from formats import build_all_formats, FOCUS_4BIT, FOCUS_8BIT, FOCUS_ALL
 from visualization.style import save_fig, PALETTE, get_color, get_marker
@@ -66,10 +65,27 @@ def _is_pareto_optimal_high_y_low_x(points: np.ndarray) -> np.ndarray:
     return mask
 
 
-def _compute_pareto_data(n: int = 4096, seed: int = 42) -> pd.DataFrame:
-    """Compute SQNR and storage metrics for all focus formats."""
+def _make_2d_outlier_tensor(batch: int = 16, features: int = 256, outlier_sigma: float = 50.0, seed: int = 42) -> np.ndarray:
+    """2D (batch × features) tensor with row 0 as systematic outlier row.
+
+    HAD+INT(C) per-row scale adapts independently; HAD+INT(T) global scale
+    is dominated by the outlier row, hurting precision on clean rows.
+    features must be a power of 2 for HAD compatibility.
+    """
+    rng = np.random.default_rng(seed)
+    x = rng.normal(0, 1, (batch, features)).astype(np.float32)
+    x[0, :] = rng.normal(0, outlier_sigma, features).astype(np.float32)
+    return x
+
+
+def _compute_pareto_data(seed: int = 42) -> pd.DataFrame:
+    """Compute SQNR and storage metrics for all focus formats.
+
+    Uses a 2D (16×256) tensor so HAD+INT(C) and HAD+INT(T) produce
+    different SQNR values and appear as distinct points on the Pareto chart.
+    """
     all_formats = build_all_formats(dim=256, seed=seed)
-    x, _ = channel_outliers(n=n, outlier_sigma=50.0, seed=seed)
+    x = _make_2d_outlier_tensor(batch=16, features=256, outlier_sigma=50.0, seed=seed)
 
     rows = []
     for fmt_name, (nominal_bits, meta_bpe) in _PARETO_FORMATS.items():
@@ -79,7 +95,7 @@ def _compute_pareto_data(n: int = 4096, seed: int = 42) -> pd.DataFrame:
         storage_bpe = nominal_bits + meta_bpe
         try:
             x_q = fmt.quantize(x)
-            sqnr = snr_db(x, x_q)
+            sqnr = snr_db(x.ravel(), x_q.ravel())
         except Exception:
             sqnr = np.nan
         rows.append({
@@ -92,9 +108,9 @@ def _compute_pareto_data(n: int = 4096, seed: int = 42) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def plot_pareto_charts(n: int = 4096, seed: int = 42, out_dir: str = "results/figures"):
+def plot_pareto_charts(seed: int = 42, out_dir: str = "results/figures"):
     """Plot Figure 3 (quality Pareto) and Figure 4 (bandwidth Pareto)."""
-    df = _compute_pareto_data(n=n, seed=seed)
+    df = _compute_pareto_data(seed=seed)
 
     # ── Figure 3: SQNR vs. Effective Bits ─────────────────────────────────────
     fig3, ax3 = plt.subplots(figsize=(10, 7))

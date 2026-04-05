@@ -26,7 +26,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
-from distributions.generators import channel_outliers
 from distributions.metrics import snr_db
 from formats import build_all_formats
 from visualization.style import save_fig, PALETTE
@@ -49,7 +48,12 @@ _HW_PARAMS_4BIT: dict[str, dict] = {
     "HAD+INT4(C)": {
         "area_rel": 1.15, "bw_bpe": 4.00, "energy_rel": 1.05,
         "paradigm": "HAD+INT",
-        "note": "FWHT butterfly add/sub only; POT scale (right-shift); no metadata BW",
+        "note": "FWHT butterfly; per-row POT scale; no metadata BW overhead",
+    },
+    "HAD+INT4(T)": {
+        "area_rel": 1.15, "bw_bpe": 4.00, "energy_rel": 1.05,
+        "paradigm": "HAD+INT",
+        "note": "FWHT butterfly; single global POT scale; same HW area as (C); lower quality on mixed distributions",
     },
     "SQ-Format": {
         "area_rel": 1.20, "bw_bpe": 5.04, "energy_rel": 1.15,
@@ -101,7 +105,12 @@ _HW_PARAMS_8BIT: dict[str, dict] = {
     "HAD+INT8(C)": {
         "area_rel": 2.38, "bw_bpe": 8.00, "energy_rel": 4.10,
         "paradigm": "HAD+INT",
-        "note": "INT8 FWHT butterfly; no metadata BW; POT scale",
+        "note": "INT8 FWHT butterfly; per-row POT scale; no metadata BW",
+    },
+    "HAD+INT8(T)": {
+        "area_rel": 2.38, "bw_bpe": 8.00, "energy_rel": 4.10,
+        "paradigm": "HAD+INT",
+        "note": "INT8 FWHT butterfly; single global POT scale; same HW area as (C); lower quality on mixed distributions",
     },
     "SQ-Format(8b)": {
         "area_rel": 2.40, "bw_bpe": 9.08, "energy_rel": 4.20,
@@ -141,18 +150,27 @@ _BW_MIN, _BW_MAX = 4.0, 10.0
 def _get_quality(
     hw_params: dict[str, dict],
     seed: int = 42,
-    n: int = 2048,
 ) -> dict[str, float]:
-    """Compute SQNR on channel-outlier σ=50 for each format in hw_params."""
+    """Compute SQNR using a 2D (8×256) row-outlier tensor.
+
+    Row 0 has σ=50 outlier values; rows 1-7 are N(0,1).
+    This makes HAD+INT(C) and HAD+INT(T) produce different SQNR values:
+      (C) per-row scale → outlier row handled independently → high SQNR
+      (T) global scale → outlier row dominates scale → clean rows lose precision
+    """
     registry = build_all_formats(dim=256, seed=seed)
-    x, _ = channel_outliers(n=n, outlier_sigma=50.0, seed=seed)
+    rng = np.random.default_rng(seed)
+    x = rng.normal(0, 1, (8, 256)).astype(np.float32)
+    x[0, :] = rng.normal(0, 50.0, 256).astype(np.float32)  # row 0 = outlier
+
     quality: dict[str, float] = {}
     for fmt_name in hw_params:
         if fmt_name not in registry:
             quality[fmt_name] = np.nan
             continue
         try:
-            quality[fmt_name] = snr_db(x, registry[fmt_name].quantize(x))
+            x_q = registry[fmt_name].quantize(x)
+            quality[fmt_name] = snr_db(x.ravel(), x_q.ravel())
         except Exception:
             quality[fmt_name] = np.nan
     return quality
@@ -265,8 +283,8 @@ def plot_ppa_bubble(out_dir: str = "results/figures", seed: int = 42) -> plt.Fig
 
     fig, (ax4, ax8) = plt.subplots(1, 2, figsize=(18, 8), constrained_layout=False)
 
-    _draw_panel(ax4, _HW_PARAMS_4BIT, q4, "4-bit: MXINT4 vs BFP (HAD+INT4) vs SQ-Format", bits=4)
-    _draw_panel(ax8, _HW_PARAMS_8BIT, q8, "8-bit: MXINT8 vs BFP (HAD+INT8) vs SQ-Format(8b)", bits=8)
+    _draw_panel(ax4, _HW_PARAMS_4BIT, q4, "4-bit: MXINT4 vs HAD+INT4(C/T) vs SQ-Format", bits=4)
+    _draw_panel(ax8, _HW_PARAMS_8BIT, q8, "8-bit: MXINT8 vs HAD+INT8(C/T) vs SQ-Format(8b)", bits=8)
 
     fig.suptitle(
         "Figure 6: Hardware PPA Bubble Chart\n"

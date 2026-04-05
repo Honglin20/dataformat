@@ -174,13 +174,13 @@ def plot_pipeline_breakdown(out_dir: str = "results/figures"):
 
     ax.set_xlabel("Pipeline Stage Latency (ps, critical path) — 45 nm", fontsize=11)
     ax.set_title(
-        "Figure 10: Hardware Pipeline Latency Breakdown (8-bit representative)\n"
-        "Block-Max Comparator Tree (MXINT) = dominant bottleneck; "
-        "Hadamard butterfly pipelined & nearly free  ·  "
-        "4-bit pipeline structure is identical\n"
-        "B+/SQ-only: INT4 dense ‖ INT8 sparse MACs execute in parallel "
-        "(single 'dual prec' stage)",
-        fontsize=10,
+        "Figure 10: Hardware Pipeline Latency Breakdown (8-bit; 4-bit structure identical)\n"
+        "MXINT: Block-Max Comparator Tree = dominant bottleneck  ·  "
+        "HAD+INT: Butterfly pipelined & nearly free\n"
+        "HAD+INT(C) and HAD+INT(T) share the same pipeline — "
+        "(C)/(T) only differs in scale granularity, not HW stages  ·  "
+        "B+/SQ: INT4‖INT8 parallel dual-prec MAC",
+        fontsize=9.5,
     )
 
     legend_elements = [
