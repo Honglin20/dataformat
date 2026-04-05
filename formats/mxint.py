@@ -36,10 +36,16 @@ class MXINTFormat:
         if max_abs == 0:
             return np.zeros_like(block)
 
-        # E8M0 scale: largest power of 2 scale such that max_abs/scale ≤ q_max
-        raw_scale = max_abs / self._q_max
-        log2_scale = np.floor(np.log2(raw_scale + 1e-38))
-        scale = 2.0 ** log2_scale
+        # OCP MX E8M0 scale: 2^(floor(log2(max_abs)) - (bits-2))
+        # This guarantees q_max * scale ≥ max_abs (no clipping of the block max).
+        #
+        # Why NOT floor(log2(max_abs / q_max)):
+        #   log2(q_max) = log2(2^(bits-1)-1) ≈ bits-1-ε  (e.g. log2(127)≈6.99)
+        #   floor(log2(max_abs) - 6.99) = floor(log2(max_abs)) - 7  for most max_abs
+        #   but OCP requires  floor(log2(max_abs)) - 6  for bits=8
+        #   → the naive formula gives scale 2× too small → clips ~5% of N(0,1) elements
+        log2_max = np.floor(np.log2(max_abs + 1e-38))
+        scale = 2.0 ** (log2_max - (self.element_bits - 2))
 
         # Quantize to integers
         x_scaled = block / scale

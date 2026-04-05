@@ -38,19 +38,32 @@ from formats.transforms.smoothquant import SmoothQuantINTQuantizer
 # ── Hardware-friendly INT quantizer (POT scale) ───────────────────────────────
 
 def _pot_scale(absmax: float, q_max: int) -> float:
-    """Power-of-two scale: 2^floor(log2(absmax/q_max)).
-    Hardware: scale division is an arithmetic right-shift."""
+    """OCP-aligned power-of-two scale: 2^(floor(log2(absmax)) - floor(log2(q_max))).
+
+    This guarantees the maximum element is covered (no clipping) while
+    maintaining as fine a step size as possible.
+
+    Hardware: result is always a power of 2 → scale multiply/divide is an
+    arithmetic right-shift, exactly as in E8M0 hardware.
+
+    Why NOT floor(log2(absmax / q_max)):
+      log2(q_max) = log2(2^(bits-1)-1) ≈ bits-1-ε  (e.g. log2(127)≈6.99)
+      floor(log2(absmax) - 6.99) = floor(log2(absmax)) - 7  for most absmax,
+      giving a scale 2× too small and clipping ~5% of N(0,1) elements in INT8.
+      The OCP formula floor(log2(absmax)) - floor(log2(q_max)) avoids this
+      by treating floor(log2(q_max)) as the exact integer exponent of q_max.
+    """
     if absmax <= 0:
         return 1.0
-    raw = float(absmax) / q_max
-    log2_s = np.floor(np.log2(raw + 1e-38))
-    return float(2.0 ** log2_s)
+    log2_absmax = int(np.floor(np.log2(float(absmax) + 1e-38)))
+    log2_qmax   = int(np.floor(np.log2(float(q_max))))
+    return float(2.0 ** (log2_absmax - log2_qmax))
 
 
 class _POTINTQuantizer:
     """Symmetric per-tensor or per-channel INT quantization with POT scale.
 
-    POT scale = 2^floor(log2(absmax / q_max)).
+    POT scale = 2^ceil(log2(absmax / q_max))  — smallest power of 2 that covers absmax.
     Division by scale is an arithmetic right-shift in hardware — no FP divider.
     """
 
