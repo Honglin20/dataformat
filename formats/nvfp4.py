@@ -42,10 +42,16 @@ class NVFP4Format:
         x = x.astype(np.float32)
         # Per-tensor scale: map max(|x|) → max representable (6.0)
         max_val = np.max(np.abs(x))
-        # POT scale: 2^floor(log2(max_val/6.0)) — division becomes right-shift in hardware
+        # OCP-aligned POT scale: 2^(floor(log2(max_val)) - floor(log2(6.0)))
+        #                      = 2^(floor(log2(max_val)) - 2)
+        #
+        # Why NOT floor(log2(max_val/6.0)):
+        #   log2(6.0) = 2.585 (non-integer). The naive formula gives
+        #   floor(log2(max_val)) - 3 in ~58.5% of cases (scale 2× too small),
+        #   causing max_val/scale ∈ [8,12) instead of [4,8) → saturates to 6.0.
         if max_val > 0:
-            raw = max_val / 6.0
-            scale = float(2.0 ** np.floor(np.log2(raw + 1e-38)))
+            log2_max = int(np.floor(np.log2(float(max_val) + 1e-38)))
+            scale = float(2.0 ** (log2_max - 2))   # floor(log2(6.0)) = 2
         else:
             scale = 1.0
         x_scaled = x / scale

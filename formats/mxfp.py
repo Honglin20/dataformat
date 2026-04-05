@@ -35,7 +35,9 @@ def _fp8_e4m3_quantize_scalar(v: float) -> float:
     exp_biased = max(0, min(15, exp_biased))
     # Compute mantissa (3 bits → 8 levels per exponent)
     if exp_biased == 0:
-        mant = round(v_abs / 2**(-6) * 8) / 8 * 2**(-6)
+        # Subnormal: value = (m/8) × 2^(1-7) = m × 2^(-9). Clamp m to [0,7].
+        mant_int = min(7, round(v_abs / 2**(-6) * 8))
+        mant = mant_int / 8 * 2**(-6)
     else:
         step = 2 ** (exp_biased - 7) / 8
         mant_int = round((v_abs - 2 ** (exp_biased - 7)) / step)
@@ -71,16 +73,21 @@ class MXFPFormat:
         if max_abs == 0:
             return np.zeros_like(block)
 
-        # Compute E8M0 scale: largest power of 2 ≤ max_abs / max_element_val
+        # Compute E8M0 scale per OCP MX spec:
+        #   scale = 2^(floor(log2(max_abs)) - floor(log2(max_elem_val)))
+        #
+        # This is NOT floor(log2(max_abs / max_elem_val)).
+        # Since log2(6.0)=2.585 and log2(448)=8.807 are non-integer,
+        # the naive formula gives a scale 2× too small in ~58.5% (FP4) and
+        # ~80.7% (FP8) of blocks respectively, causing severe saturation.
         if self.element_bits == 4:
             max_elem_val = 6.0
         else:  # 8-bit E4M3
             max_elem_val = _FP8_E4M3_MAX
 
-        raw_scale = max_abs / max_elem_val
-        # Quantize scale to E8M0 (power of 2): floor to nearest power of 2
-        log2_scale = np.floor(np.log2(raw_scale + 1e-38))
-        scale = 2.0 ** log2_scale
+        log2_max      = int(np.floor(np.log2(max_abs + 1e-38)))
+        log2_elem_max = int(np.floor(np.log2(max_elem_val)))
+        scale = 2.0 ** (log2_max - log2_elem_max)
 
         # Scale and quantize elements
         x_scaled = block / scale
