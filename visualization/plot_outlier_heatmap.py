@@ -53,20 +53,57 @@ _FAMILY_LABELS = [
 ]
 
 
-def build_heatmap_data(n: int = 2048, seed: int = 42) -> pd.DataFrame:
-    """Build the SQNR matrix for focus formats × outlier conditions."""
-    all_formats = build_all_formats(dim=256, seed=seed)
+_BATCH = 16
+_FEATURES = 128  # power of 2 for HAD; features must match dim in build_all_formats
 
-    # Outlier conditions: 5 spiky + 4 channel
+
+def build_heatmap_data(n: int = 2048, seed: int = 42) -> pd.DataFrame:
+    """Build the SQNR matrix for focus formats × outlier conditions.
+
+    Uses 2D tensors of shape (16, 128) = 2048 elements so that
+    HAD+INT(C) ≠ HAD+INT(T) for row-outlier (Channel) conditions:
+      - Spiky: spikes randomly distributed across ALL elements → (C) ≈ (T)
+      - Channel/Row outlier: row 0 has high σ, rows 1-15 are N(0,1)
+          → (C) per-row scale adapts to row 0 independently → (C) >> (T)
+
+    Parameters
+    ----------
+    n : int
+        Kept for API compatibility; actual tensor size is always _BATCH * _FEATURES = 2048.
+    seed : int
+        Random seed for reproducibility.
+    """
+    all_formats = build_all_formats(dim=_FEATURES, seed=seed)
+
+    def _make_spiky_2d(spike_mult: float, s: int) -> np.ndarray:
+        """2D (16, 128) with spikes randomly distributed across all positions."""
+        rng = np.random.default_rng(s)
+        x = rng.normal(0, 1, (_BATCH, _FEATURES)).astype(np.float32)
+        n_total = _BATCH * _FEATURES
+        n_spikes = max(1, int(np.ceil(0.001 * n_total)))
+        flat = x.ravel()
+        spike_idx = rng.choice(n_total, size=n_spikes, replace=False)
+        signs = rng.choice([-1.0, 1.0], size=n_spikes).astype(np.float32)
+        flat[spike_idx] = signs * spike_mult
+        return flat.reshape(_BATCH, _FEATURES)
+
+    def _make_row_outlier_2d(outlier_sigma: float, s: int) -> np.ndarray:
+        """2D (16, 128) where row 0 has σ=outlier_sigma, rows 1-15 are N(0,1)."""
+        rng = np.random.default_rng(s)
+        x = rng.normal(0, 1, (_BATCH, _FEATURES)).astype(np.float32)
+        x[0, :] = rng.normal(0, outlier_sigma, _FEATURES).astype(np.float32)
+        return x
+
+    # Outlier conditions: 5 spiky + 4 row-outlier (channel)
     conditions = []
     for mult in [1, 10, 50, 100, 200]:
         label = f"Spiky\n{mult}×"
         m = float(mult)
-        conditions.append((label, lambda n, s, _m=m: spiky_outliers(n, spike_multiplier=_m, seed=s)[0]))
+        conditions.append((label, lambda s, _m=m: _make_spiky_2d(_m, s)))
     for sig in [10, 30, 50, 100]:
         label = f"Channel\nσ={sig}"
         sg = float(sig)
-        conditions.append((label, lambda n, s, _sg=sg: channel_outliers(n, outlier_sigma=_sg, seed=s)[0]))
+        conditions.append((label, lambda s, _sg=sg: _make_row_outlier_2d(_sg, s)))
 
     rows = []
     for fmt_name in _HEATMAP_FORMATS:
@@ -75,10 +112,10 @@ def build_heatmap_data(n: int = 2048, seed: int = 42) -> pd.DataFrame:
         fmt = all_formats[fmt_name]
         row = {"format": fmt_name}
         for cond_label, cond_fn in conditions:
-            x = cond_fn(n, seed)
+            x = cond_fn(seed)
             try:
                 x_q = fmt.quantize(x)
-                row[cond_label] = snr_db(x, x_q)
+                row[cond_label] = snr_db(x.ravel(), x_q.ravel())
             except Exception:
                 row[cond_label] = np.nan
         rows.append(row)

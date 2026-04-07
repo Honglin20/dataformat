@@ -108,6 +108,10 @@ def run_phase5_visualizations(out_dir: str = "results/figures") -> list:
          "visualization.plot_pipeline", "plot_pipeline_breakdown"),
         ("Fig 11: Hardware Area Breakdown (4b+8b panels)",
          "visualization.plot_area", "plot_area_breakdown"),
+        ("Fig 12: Cross-Distribution Robustness",
+         "visualization.plot_distribution_robustness", "plot_distribution_robustness"),
+        ("Fig 13: Outlier Row Fraction Sweep",
+         "visualization.plot_outlier_fraction", "plot_outlier_fraction"),
     ]
 
     for name, module_path, fn_name in figures:
