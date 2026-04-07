@@ -1,7 +1,8 @@
 """Figure 2: Precision-Outlier Sensitivity Heatmap.
 
+Two panels (top=4-bit, bottom=8-bit), same outlier conditions on X-axis.
 X-axis: outlier condition (spiky 1×/10×/50×/100×/200× + channel σ=10/30/50/100).
-Y-axis: focus formats.
+Y-axis: focus formats per bit-width.
 Color:  SQNR in dB (RdYlGn: green=high SQNR=good, red=low SQNR=bad).
 Cells annotated with integer SQNR values (font 8).
 """
@@ -16,40 +17,51 @@ from distributions.metrics import snr_db
 from formats import build_all_formats, FOCUS_4BIT, FOCUS_8BIT, FOCUS_ALL
 from visualization.style import save_fig, PALETTE
 
-# Focus formats for the heatmap (ordered for visual grouping)
-_HEATMAP_FORMATS = [
+# 4-bit formats panel (ordered for visual grouping)
+_HEATMAP_FORMATS_4BIT = [
     "FP32",
-    "INT4", "INT8",
-    "MXINT4", "MXINT8",
+    "INT4",
+    "MXINT4",
     "NVFP4", "NF4",
     "SQ-Format",
     "HAD+INT4(C)", "HAD+INT4(T)",
-    "HAD+INT8(C)", "HAD+INT8(T)",
     "HAD+SQ",
-    "RandRot+INT4", "RandRot+INT8",
+    "RandRot+INT4",
 ]
 
-# Family separators: row index AFTER which to draw a line
-_SEPARATORS = [
-    1,   # after FP32
-    3,   # after INT4, INT8
-    5,   # after MXINT4, MXINT8
-    7,   # after NVFP4, NF4
-    8,   # after SQ-Format
-    12,  # after HAD+INT4(C/T), HAD+INT8(C/T)
-    13,  # after HAD+SQ
+# 8-bit formats panel
+_HEATMAP_FORMATS_8BIT = [
+    "FP32",
+    "INT8",
+    "MXINT8",
+    "SQ-Format(8b)",
+    "HAD+INT8(C)", "HAD+INT8(T)",
+    "RandRot+INT8",
 ]
 
-# Family label positions: (label, start_row, end_row)
-_FAMILY_LABELS = [
-    ("Baseline",    0, 1),
-    ("Plain INT",   1, 3),
-    ("MXINT",       3, 5),
-    ("HW-Native 4b",5, 7),
-    ("SQ-Format",   7, 8),
-    ("HAD+INT",     8, 12),
-    ("HAD+SQ",      12, 13),
-    ("RandRot",     13, 15),
+# Family separators per panel: row index AFTER which to draw a line
+_SEPARATORS_4BIT = [1, 2, 3, 5, 6, 8, 9]  # after FP32/INT4/MXINT4/NF4/SQ/HAD(T)/HAD+SQ
+_SEPARATORS_8BIT = [1, 2, 3, 4, 6]
+
+# Family labels: (label, start_row, end_row)
+_FAMILY_LABELS_4BIT = [
+    ("FP32",        0, 1),
+    ("Plain INT",   1, 2),
+    ("MXINT",       2, 3),
+    ("HW-Native",   3, 5),
+    ("SQ-Format",   5, 6),
+    ("HAD+INT",     6, 8),
+    ("HAD+SQ",      8, 9),
+    ("RandRot",     9, 10),
+]
+
+_FAMILY_LABELS_8BIT = [
+    ("FP32",        0, 1),
+    ("Plain INT",   1, 2),
+    ("MXINT",       2, 3),
+    ("SQ-Format",   3, 4),
+    ("HAD+INT",     4, 6),
+    ("RandRot",     6, 7),
 ]
 
 
@@ -106,7 +118,8 @@ def build_heatmap_data(n: int = 2048, seed: int = 42) -> pd.DataFrame:
         conditions.append((label, lambda s, _sg=sg: _make_row_outlier_2d(_sg, s)))
 
     rows = []
-    for fmt_name in _HEATMAP_FORMATS:
+    all_fmt_names = list(dict.fromkeys(_HEATMAP_FORMATS_4BIT + _HEATMAP_FORMATS_8BIT))
+    for fmt_name in all_fmt_names:
         if fmt_name not in all_formats:
             continue
         fmt = all_formats[fmt_name]
@@ -123,55 +136,39 @@ def build_heatmap_data(n: int = 2048, seed: int = 42) -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("format")
 
 
-def plot_outlier_heatmap(
-    n: int = 2048,
-    seed: int = 42,
-    out_dir: str = "results/figures",
-):
-    """Plot Figure 2: Precision-Outlier Sensitivity Heatmap (SQNR)."""
-    df = build_heatmap_data(n=n, seed=seed)
-
-    # Reorder rows to match _HEATMAP_FORMATS
-    ordered_fmts = [f for f in _HEATMAP_FORMATS if f in df.index]
-    df = df.loc[ordered_fmts]
-
-    valid_vals = df.values[np.isfinite(df.values)]
-    vmin = float(np.nanmin(valid_vals)) if len(valid_vals) else 0
-    vmax = float(np.nanmax(valid_vals)) if len(valid_vals) else 60
-
-    with plt.rc_context({"figure.constrained_layout.use": False}):
-        fig, ax = plt.subplots(figsize=(13, 9))
-
+def _draw_heatmap_panel(ax, df: pd.DataFrame, ordered_fmts: list,
+                        separators: list, family_labels: list,
+                        vmin: float, vmax: float, title: str) -> None:
+    """Draw one heatmap panel (4-bit or 8-bit) onto ax."""
+    sub = df.loc[[f for f in ordered_fmts if f in df.index]]
     sns.heatmap(
-        df,
+        sub,
         ax=ax,
         cmap="RdYlGn",
         annot=False,
         linewidths=0.4,
         linecolor="white",
-        cbar_kws={"label": "SQNR (dB) — higher = better", "shrink": 0.7},
+        cbar_kws={"label": "SQNR (dB)", "shrink": 0.8},
         vmin=vmin,
         vmax=vmax,
     )
-
-    # Annotate cells with integer SQNR values (font 8)
-    for i, fmt in enumerate(df.index):
-        for j, col in enumerate(df.columns):
-            val = df.loc[fmt, col]
+    # Annotate cells
+    for i, fmt in enumerate(sub.index):
+        for j, col in enumerate(sub.columns):
+            val = sub.loc[fmt, col]
             if np.isfinite(val):
                 ax.text(j + 0.5, i + 0.5, f"{int(round(val))}",
-                        ha="center", va="center", fontsize=8, color="black",
-                        fontweight="bold")
-
-    # Horizontal family separators between families
-    for sep in _SEPARATORS:
-        if sep < len(ordered_fmts):
-            ax.axhline(sep, color="navy", linewidth=1.8, alpha=0.7)
-
+                        ha="center", va="center", fontsize=7.5,
+                        color="black", fontweight="bold")
+    # Separators
+    n_rows = len(sub)
+    for sep in separators:
+        if sep < n_rows:
+            ax.axhline(sep, color="navy", linewidth=1.5, alpha=0.7)
     # Family labels on the right
-    n_cols = len(df.columns)
-    for family, start, end in _FAMILY_LABELS:
-        end = min(end, len(ordered_fmts))
+    n_cols = len(sub.columns)
+    for family, start, end in family_labels:
+        end = min(end, n_rows)
         if start >= end:
             continue
         mid = (start + end) / 2.0
@@ -179,22 +176,59 @@ def plot_outlier_heatmap(
             family,
             xy=(n_cols + 0.1, mid),
             xycoords="data",
-            fontsize=7.5, rotation=-90, va="center", ha="left",
+            fontsize=7, rotation=-90, va="center", ha="left",
             color="navy", fontstyle="italic",
             annotation_clip=False,
         )
+    ax.set_title(title, fontsize=10, fontweight="bold")
+    ax.set_xlabel("Outlier Condition", fontsize=9)
+    ax.set_ylabel("Format", fontsize=9)
+    ax.tick_params(axis="x", rotation=0, labelsize=8)
+    ax.tick_params(axis="y", rotation=0, labelsize=8)
 
-    ax.set_title(
-        "Figure 2: Precision-Outlier Sensitivity Heatmap\n"
-        "(SQNR in dB — green = high quality, red = low quality)",
-        fontsize=12, pad=12,
+
+def plot_outlier_heatmap(
+    n: int = 2048,
+    seed: int = 42,
+    out_dir: str = "results/figures",
+):
+    """Plot Figure 2: Precision-Outlier Sensitivity Heatmap — 4-bit (top) and 8-bit (bottom)."""
+    df = build_heatmap_data(n=n, seed=seed)
+
+    # Shared color scale across both panels for fair comparison
+    valid_vals = df.values[np.isfinite(df.values)]
+    vmin = float(np.nanmin(valid_vals)) if len(valid_vals) else 0
+    vmax = float(np.nanmax(valid_vals)) if len(valid_vals) else 60
+
+    n4 = len([f for f in _HEATMAP_FORMATS_4BIT if f in df.index])
+    n8 = len([f for f in _HEATMAP_FORMATS_8BIT if f in df.index])
+
+    with plt.rc_context({"figure.constrained_layout.use": False}):
+        fig, (ax4, ax8) = plt.subplots(
+            2, 1, figsize=(14, 4 + n4 * 0.55 + n8 * 0.55),
+            gridspec_kw={"height_ratios": [n4, n8]},
+        )
+
+    _draw_heatmap_panel(
+        ax4, df, _HEATMAP_FORMATS_4BIT,
+        _SEPARATORS_4BIT, _FAMILY_LABELS_4BIT,
+        vmin, vmax,
+        "4-bit Formats — SQNR (dB): MXINT4 vs SQ-Format vs HAD+INT4(C/T)",
     )
-    ax.set_xlabel("Outlier Condition")
-    ax.set_ylabel("Quantization Format")
-    ax.tick_params(axis="x", rotation=0)
-    ax.tick_params(axis="y", rotation=0)
+    _draw_heatmap_panel(
+        ax8, df, _HEATMAP_FORMATS_8BIT,
+        _SEPARATORS_8BIT, _FAMILY_LABELS_8BIT,
+        vmin, vmax,
+        "8-bit Formats — SQNR (dB): MXINT8 vs SQ-Format(8b) vs HAD+INT8(C/T)",
+    )
 
-    fig.subplots_adjust(left=0.16, right=0.88, top=0.92, bottom=0.10)
+    fig.suptitle(
+        "Figure 2: Precision-Outlier Sensitivity Heatmap\n"
+        "(green = high SQNR = good  ·  red = low SQNR = bad  ·  "
+        "Channel conditions expose HAD+INT(C) vs (T) difference)",
+        fontsize=11, y=1.01,
+    )
+    fig.subplots_adjust(left=0.18, right=0.88, top=0.95, bottom=0.08, hspace=0.45)
     save_fig(fig, "fig02_outlier_sensitivity_heatmap", out_dir)
     return fig
 

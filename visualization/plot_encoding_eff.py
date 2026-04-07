@@ -1,11 +1,10 @@
 """Figure 9: Format Encoding Efficiency — Storage Bits vs. Effective Bits.
 
-For each focus format, two bars:
+Four sub-panels: 4-bit and 8-bit × Gaussian N(0,1) [easy] and Channel-Outlier σ=50 [hard].
+For each format, two bars:
   - Storage bits per element (what you actually store, incl. metadata).
   - Effective bits (information-theoretic equivalent, rate-distortion).
-
-Two sub-panels: Gaussian N(0,1) [easy] and Channel-Outlier σ=50 [hard].
-Key comparison: MXINT4 (pays +0.25 bpe overhead) vs HAD+INT4(C) (zero overhead).
+Key comparison: MXINT (pays +0.25 bpe overhead) vs HAD+INT (zero overhead).
 """
 
 import numpy as np
@@ -17,25 +16,32 @@ from formats import build_all_formats
 from visualization.style import save_fig, get_color
 
 
-# Focus formats: (name, nominal_bits, metadata_bpe)
-_EFF_FORMATS = [
+# Focus formats by bit-width: (name, nominal_bits, metadata_bpe)
+_EFF_FORMATS_4BIT = [
+    ("FP32",         32, 0.00),
+    ("INT4",          4, 0.00),
+    ("MXINT4",        4, 0.25),
+    ("NVFP4",         4, 0.00),
+    ("NF4",           4, 0.00),
+    ("SQ-Format",     4, 1.01),
+    ("HAD+INT4(C)",   4, 0.00),
+    ("HAD+INT4(T)",   4, 0.00),
+    ("HAD+SQ",        4, 1.01),
+    ("RandRot+INT4",  4, 0.00),
+]
+
+_EFF_FORMATS_8BIT = [
     ("FP32",          32, 0.00),
     ("INT8",           8, 0.00),
     ("MXINT8",         8, 0.25),
-    ("INT4",           4, 0.00),
-    ("MXINT4",         4, 0.25),
-    ("NVFP4",          4, 0.00),
-    ("NF4",            4, 0.00),
-    ("SQ-Format",      4, 1.01),
     ("SQ-Format(8b)",  8, 1.01),
-    ("HAD+INT4(C)",    4, 0.00),
-    ("HAD+INT4(T)",    4, 0.00),
     ("HAD+INT8(C)",    8, 0.00),
     ("HAD+INT8(T)",    8, 0.00),
-    ("HAD+SQ",         4, 1.01),
-    ("RandRot+INT4",   4, 0.00),
     ("RandRot+INT8",   8, 0.00),
 ]
+
+# Combined for data computation
+_EFF_FORMATS = _EFF_FORMATS_4BIT + [f for f in _EFF_FORMATS_8BIT if f[0] != "FP32"]
 
 
 def compute_encoding_efficiency(seed: int = 42) -> tuple:
@@ -131,24 +137,33 @@ def _draw_panel(ax, data: dict, fmt_names: list, title: str):
 
 
 def plot_encoding_efficiency(out_dir: str = "results/figures", seed: int = 42):
-    """Plot Figure 9: Format Encoding Efficiency (storage vs effective bits)."""
+    """Plot Figure 9: Format Encoding Efficiency — 4-panel (4-bit/8-bit × Easy/Hard)."""
     easy, hard = compute_encoding_efficiency(seed=seed)
-    fmt_names = [f for f, _, _ in _EFF_FORMATS if f in easy]
 
-    fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+    names4 = [f for f, _, _ in _EFF_FORMATS_4BIT if f in easy]
+    names8 = [f for f, _, _ in _EFF_FORMATS_8BIT if f in easy]
 
-    _draw_panel(axes[0], easy, fmt_names,
-                "Encoding Efficiency — Gaussian N(0,1)\n"
+    fig, axes = plt.subplots(2, 2, figsize=(20, 12), constrained_layout=False)
+
+    _draw_panel(axes[0, 0], easy, names4,
+                "4-bit — Gaussian N(0,1)\n"
                 "(light=storage bits, dark=effective bits, label=efficiency%)")
-    _draw_panel(axes[1], hard, fmt_names,
-                "Encoding Efficiency — Channel Outlier σ=50\n"
-                "(MXINT4: pays +0.25bpe overhead; HAD+INT4(C): zero overhead)")
+    _draw_panel(axes[0, 1], hard, names4,
+                "4-bit — Channel Outlier σ=50\n"
+                "(HAD+INT4(C) > (T); MXINT4 pays +0.25 bpe overhead)")
+    _draw_panel(axes[1, 0], easy, names8,
+                "8-bit — Gaussian N(0,1)\n"
+                "(light=storage bits, dark=effective bits, label=efficiency%)")
+    _draw_panel(axes[1, 1], hard, names8,
+                "8-bit — Channel Outlier σ=50\n"
+                "(HAD+INT8(C) >> (T); MXINT8 pays +0.25 bpe overhead)")
 
     fig.suptitle(
-        "Figure 9: Format Encoding Efficiency — Storage Bits vs. Effective Bits",
-        fontsize=13, y=1.01,
+        "Figure 9: Format Encoding Efficiency — Storage Bits vs. Effective Bits\n"
+        "(Top row: 4-bit formats  ·  Bottom row: 8-bit formats)",
+        fontsize=13,
     )
-
+    fig.subplots_adjust(left=0.06, right=0.97, top=0.93, bottom=0.12, hspace=0.45, wspace=0.30)
     save_fig(fig, "fig09_encoding_efficiency", out_dir)
     return fig
 
