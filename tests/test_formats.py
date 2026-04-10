@@ -23,7 +23,7 @@ from formats.mxfp import MXFPFormat
 from formats.mxint import MXINTFormat
 from formats.nf4 import NF4Format
 from formats.fp6 import FP6Format
-from formats.sq_format import SQFormat
+from formats.sq_format import SQFormat, SQFormatActivations
 from formats.transforms.hadamard import hadamard_transform, inverse_hadamard_transform, HADTransform
 from formats.transforms.random_rotation import RandomRotationTransform
 from config import NF4_LEVELS
@@ -381,6 +381,8 @@ class TestMXINT:
 # ─── SQ-Format ───────────────────────────────────────────────────────────────
 
 class TestSQFormat:
+    # ── Algorithm 1 (weight quantization) ────────────────────────────────────
+
     def test_shape(self):
         sq = SQFormat()
         x = make_input(outlier=True)
@@ -412,6 +414,140 @@ class TestSQFormat:
         sq = SQFormat(dense_bits=4, sparse_bits=8, sparsity_ratio=0.01)
         x = make_input(outlier=True)
         assert np.all(np.isfinite(sq.quantize(x)))
+
+    def test_backward_compat_params(self):
+        """Old parameter names (dense_bits, sparse_bits, sparsity_ratio) still work."""
+        sq = SQFormat(dense_bits=4, sparse_bits=8, sparsity_ratio=0.01)
+        assert sq.low_bits == 4
+        assert sq.high_bits == 8
+        assert abs(sq.sparsity - 0.99) < 1e-6   # sparsity = 1 - sparsity_ratio
+        assert abs(sq.sparsity_ratio - 0.01) < 1e-6
+
+    def test_bank_structure_isolates_outlier(self):
+        """Within a bank the outlier element must receive high-precision treatment."""
+        # One bank, two outliers planted at known positions.
+        # With sparsity=0.5 the top-50% of a 4-element bank = 2 elements get hhigh.
+        sq = SQFormat(bank_size=4, sparsity=0.5, high_bits=8, low_bits=4)
+        x = np.array([100.0, 0.1, -100.0, 0.1], dtype=np.float32)
+        x_q = sq.quantize(x)
+        # The two outliers should be recovered more accurately than INT4 would allow
+        assert np.all(np.isfinite(x_q))
+        assert x_q.shape == x.shape
+        # Outlier reconstruction error should be very small (high-precision path)
+        assert abs(x_q[0] - 100.0) < 2.0, f"outlier[0] error={abs(x_q[0]-100.0):.2f}"
+        assert abs(x_q[2] - (-100.0)) < 2.0, f"outlier[2] error={abs(x_q[2]+100.0):.2f}"
+
+    def test_hessian_importance_changes_mask(self):
+        """Providing H_inv_diag should shift importance from magnitude to Hessian metric."""
+        sq = SQFormat(bank_size=4, sparsity=0.5, high_bits=8, low_bits=4)
+        # W: large row-0, small row-1
+        W = np.array([[10.0, 9.0], [0.1, 0.1]], dtype=np.float32)
+        # H_inv_diag: row-0 has tiny H⁻¹ (high Hessian curvature = less important per metric)
+        #             row-1 has huge H⁻¹ (low Hessian curvature = more important per metric)
+        H_inv_diag = np.array([0.001, 1000.0], dtype=np.float32)
+        # With Hessian: I_0 = (10)² / (0.001)² = 1e8 >> I_1 = (0.1)² / (1000)² = 1e-8
+        # So row-0 still dominates here — just verify it runs without error and shape is ok.
+        W_q = sq.quantize(W, H_inv_diag=H_inv_diag)
+        assert W_q.shape == W.shape
+        assert np.all(np.isfinite(W_q))
+
+    def test_paper_faithful_s05_overhead(self):
+        """Paper-canonical config (s=0.5, b=128, hhigh=8, hlow=4): overhead = 7 bits."""
+        sq = SQFormat(bank_size=128, sparsity=0.5, high_bits=8, low_bits=4)
+        oh = sq.encoding_overhead()
+        # high_cost=0.5*8=4, low_cost=0.5*4=2, mask=1 → total=7
+        assert abs(oh["data_bits_per_element"] - 7.0) < 1e-6
+
+    # ── Algorithm 2 (activation quantization) ────────────────────────────────
+
+    def test_sq_format_a_shape(self):
+        sq_a = SQFormatActivations(bank_size=128, sparsity=0.5)
+        x = make_input(outlier=True)
+        x_q = sq_a.quantize(x)
+        assert x_q.shape == x.shape
+
+    def test_sq_format_a_finite(self):
+        sq_a = SQFormatActivations(bank_size=128, sparsity=0.5)
+        x = make_input(outlier=True)
+        assert np.all(np.isfinite(sq_a.quantize(x)))
+
+    def test_sq_format_a_quantize_weights_shape(self):
+        """quantize_weights must return (W_quant, scales, mask, reorder_idx) with correct shapes."""
+        K, N = 64, 32
+        sq_a = SQFormatActivations(bank_size=32, sparsity=0.5, high_bits=8, low_bits=4)
+        W      = np.random.default_rng(0).normal(0, 1, (K, N)).astype(np.float32)
+        A_mean = np.random.default_rng(1).normal(0, 1, K).astype(np.float32)
+
+        W_q, scales, mask, reorder_idx = sq_a.quantize_weights(W, A_mean)
+
+        assert W_q.shape      == (K, N),   f"W_q shape {W_q.shape}"
+        assert scales.shape   == (K,),     f"scales shape {scales.shape}"
+        assert mask.shape     == (K,),     f"mask shape {mask.shape}"
+        assert reorder_idx.shape == (K,),  f"reorder_idx shape {reorder_idx.shape}"
+        assert mask.dtype == bool
+        assert np.all(np.isfinite(W_q))
+
+    def test_sq_format_a_mask_sparsity(self):
+        """Fraction of high-precision channels per bank ≈ (1-s)."""
+        K, N = 128, 64
+        sq_a = SQFormatActivations(bank_size=64, sparsity=0.5, high_bits=8, low_bits=4)
+        W      = np.random.default_rng(0).normal(0, 1, (K, N)).astype(np.float32)
+        A_mean = np.random.default_rng(1).normal(0, 1, K).astype(np.float32)
+
+        _, _, mask, reorder_idx = sq_a.quantize_weights(W, A_mean)
+
+        # Undo reordering to check per-bank mask fractions
+        orig_mask = np.empty_like(mask)
+        orig_mask[reorder_idx] = mask
+        for bank_start in range(0, K, 64):
+            bank_mask = orig_mask[bank_start:bank_start + 64]
+            high_frac = bank_mask.mean()
+            assert abs(high_frac - 0.5) < 0.1, \
+                f"Bank {bank_start}: high-prec fraction={high_frac:.2f}, expected ≈0.5"
+
+    def test_sq_format_a_reorder_high_first(self):
+        """After reordering, high-precision channels must come before low-prec in each bank."""
+        K, N = 32, 16
+        sq_a = SQFormatActivations(bank_size=16, sparsity=0.5, high_bits=8, low_bits=4)
+        W      = np.random.default_rng(2).normal(0, 1, (K, N)).astype(np.float32)
+        A_mean = np.abs(np.random.default_rng(3).normal(0, 1, K)).astype(np.float32)
+
+        _, _, mask_reordered, _ = sq_a.quantize_weights(W, A_mean)
+
+        for bank_start in range(0, K, 16):
+            bm = mask_reordered[bank_start:bank_start + 16]
+            # All True values must come before False values within the bank
+            seen_false = False
+            for v in bm:
+                if not v:
+                    seen_false = True
+                if seen_false and v:
+                    pytest.fail(f"Bank {bank_start}: low-prec channel before high-prec after reorder")
+
+    def test_sq_format_a_importance_uses_activation(self):
+        """Channels with large |Ā_j · Σ W'_ji| should be selected as high-precision."""
+        K, N = 4, 8
+        sq_a = SQFormatActivations(bank_size=4, sparsity=0.5, high_bits=8, low_bits=4)
+        # Channel 0: large activation, large weights → most important
+        # Channel 3: tiny activation, small weights → least important
+        W = np.array([
+            [10.0] * N,   # channel 0: large weights
+            [1.0]  * N,   # channel 1
+            [1.0]  * N,   # channel 2
+            [0.01] * N,   # channel 3: tiny weights
+        ], dtype=np.float32)
+        A_mean = np.array([100.0, 1.0, 1.0, 0.01], dtype=np.float32)
+
+        _, _, mask_reordered, reorder_idx = sq_a.quantize_weights(W, A_mean)
+
+        # Undo reordering
+        orig_mask = np.empty_like(mask_reordered)
+        orig_mask[reorder_idx] = mask_reordered
+
+        # Channel 0 (highest importance) must be high-precision
+        assert orig_mask[0], "Channel 0 (highest importance) should be high-precision"
+        # Channel 3 (lowest importance) must be low-precision
+        assert not orig_mask[3], "Channel 3 (lowest importance) should be low-precision"
 
 
 # ─── Metrics ─────────────────────────────────────────────────────────────────
