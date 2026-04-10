@@ -72,10 +72,10 @@ _HW_PARAMS_4BIT: dict[str, dict] = {
         "note": "MXFP4 E2M1; FP element decode adds barrel-shift + exp align logic",
     },
     "NVFP4": {
-        # (*) BF16 outer scale → FP16 mul in decode path (hardware-unfriendly)
+        # (*) FP32 outer scale → FP32 mul in decode path (hardware-unfriendly)
         "area_rel": 1.21, "bw_bpe": 4.50, "energy_rel": 1.22,
         "paradigm": "ref",
-        "note": "(*) BF16 outer scale: FP16 mul in decode (+0.08× area); E8M0/16 (+0.5 b/elem)",
+        "note": "(*) FP32 outer scale: FP32 mul in decode (+0.08× area); E8M0/16 (+0.5 b/elem)",
     },
     "NF4": {
         # (**) FP32 absmax dequant multiply per element (hardware-unfriendly)
@@ -289,7 +289,7 @@ def plot_ppa_bubble(out_dir: str = "results/figures", seed: int = 42) -> plt.Fig
     fig.suptitle(
         "Figure 6: Hardware PPA Bubble Chart\n"
         "Bubble ∝ memory bandwidth (b/elem incl. metadata)  ·  "
-        "(*) NVFP4 BF16 outer scale  (**) NF4 FP32 dequant — hardware-unfriendly",
+        "(*) NVFP4 FP32 outer scale  (**) NF4 FP32 dequant — hardware-unfriendly",
         fontsize=10,
     )
     fig.subplots_adjust(left=0.07, right=0.98, top=0.88, bottom=0.09, wspace=0.28)

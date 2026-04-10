@@ -34,12 +34,12 @@ This study evaluates 24 quantization formats across three orthogonal dimensions 
 | MXFP4 | 4+0.25 | OCP Microscaling FP, Block=32, E2M1, shared E8M0 exponent | E8M0 (POT) | ✓ |
 | MXINT8 | 8+0.25 | OCP Microscaling INT, Block=32, shared E8M0 scale | E8M0 (POT) | ✓ |
 | MXINT4 | 4+0.25 | OCP Microscaling INT, Block=32, shared E8M0 scale | E8M0 (POT) | ✓ |
-| NVFP4 | 4+0.5* | NVIDIA Blackwell E2M1, 8 positive levels: {0, 0.5, 1, 1.5, 2, 3, 4, 6} | E8M0/16 + BF16 outer* | ⚠️ |
+| NVFP4 | 4+0.5* | NVIDIA Blackwell E2M1, 8 positive levels: {0, 0.5, 1, 1.5, 2, 3, 4, 6} | E8M0/16 + FP32 outer* | ⚠️ |
 | NF4 | 4 | QLoRA NormalFloat — 16 levels at N(0,1) quantiles, info-theoretically optimal | FP32 absmax | ⚠️ |
 | FP6 | 6 | E3M2, Pareto midpoint between FP4 and FP8, max representable = 28.0 | FP32 absmax | ⚠️ |
 
 > **⚠️ Hardware-unfriendly scale note:**
-> - **NVFP4**: Real Blackwell spec stores an 8-bit E8M0 scale per 16 elements *plus* a BF16 outer per-tensor scale. The BF16 outer scale requires an FP16 multiplier in the decode path — unlike INT formats where the POT scale is a free arithmetic right-shift. Area penalty: +0.08×, energy penalty: +0.12×.
+> - **NVFP4**: Real Blackwell spec stores an 8-bit E8M0 scale per 16 elements *plus* a FP32 outer per-tensor scale. The FP32 outer scale requires an FP32 multiplier in the decode path — unlike INT formats where the POT scale is a free arithmetic right-shift. Area penalty: +0.08×, energy penalty: +0.12×.
 > - **NF4**: Dequantization requires `q_norm × absmax` (one FP32 multiply per element). `absmax` is arbitrary, not a power-of-two. Area penalty: +0.13×, energy penalty: +0.20×.
 > - **FP6**: Scale factor `absmax / 28.0` is arbitrary FP32 — a divider or reciprocal-multiply is required. Also needs a barrel shifter to decode 6-bit packed elements from byte-aligned SRAM. Area penalty: +0.08×, energy penalty: +0.12×.
 > - **SmoothQuant**: Per-channel smoothing scales are FP32 ROM values applied as FP32 multiplies per activation channel — not POT.
@@ -235,7 +235,7 @@ MX formats pay **+0.25 bits/element** for the shared E8M0 block scale. On Gaussi
 |--------|--------|-------------|-------------|-------------------|
 | A | MXINT4 | 1.30× | 4.25 | None (E8M0 = POT) |
 | A | MXINT8 | 2.55× | 8.25 | None |
-| — | NVFP4 | 1.21× | 4.50 | BF16 outer scale FP16 mul ⚠️ |
+| — | NVFP4 | 1.21× | 4.50 | FP32 outer scale FP32 mul ⚠️ |
 | — | NF4 | 1.18× | 4.00 | FP32 absmax dequant mul ⚠️ |
 | B | HAD+INT4 | 1.15× | 4.00 | None (FWHT = add/sub, POT scale) |
 | B | HAD+INT8 | 2.38× | 8.00 | None |
@@ -346,7 +346,7 @@ Stacked bar chart decomposing relative silicon area per scheme into components:
 - **Hadamard Butterfly** (green): FWHT add/sub network — small fraction vs. MAC array
 - **SQ Gather/Scatter** (teal): compaction + priority encoder + scatter mux
 - **Format Decoder** (violet): LUT, barrel-shift decode
-- **HW-Unfriendly FP ops** (orange): explicitly isolated FP scale multiply penalty for NVFP4 (BF16 outer scale) and NF4 (FP32 absmax dequant)
+- **HW-Unfriendly FP ops** (orange): explicitly isolated FP scale multiply penalty for NVFP4 (FP32 outer scale) and NF4 (FP32 absmax dequant)
 - **Rotation ROM** (red, RandRot only): N×N SRAM — dominates and makes RandRot impractical
 
 All values normalised to INT4 MAC array = 1.0×.
@@ -420,7 +420,7 @@ dataformat/
 │   ├── baseline.py              # FP32, BF16
 │   ├── mxfp.py                  # MXFP4, MXFP8 — E8M0 block scale, HW-friendly ✓
 │   ├── mxint.py                 # MXINT4, MXINT8 — E8M0 block scale, HW-friendly ✓
-│   ├── nvfp4.py                 # NVFP4 — BF16 outer scale, HW-unfriendly ⚠️
+│   ├── nvfp4.py                 # NVFP4 — FP32 outer scale, HW-unfriendly ⚠️
 │   ├── nf4.py                   # NF4 — FP32 absmax dequant mul, HW-unfriendly ⚠️
 │   ├── fp6.py                   # FP6 E3M2 — FP32 scale + barrel-shift decode ⚠️
 │   ├── sq_format.py             # SQ-Format — configurable dense/sparse bits, POT scales ✓

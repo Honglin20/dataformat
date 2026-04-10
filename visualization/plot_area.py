@@ -21,7 +21,7 @@ Component definitions
   sq_gs         SQ Gather/Scatter: compaction network + priority encoder
                 + scatter mux array. O(N log N) mux gates.
   decoder       Format-specific decode logic:
-                  NVFP4: BF16 outer scale FP16 mul (*hardware-unfriendly*)
+                  NVFP4: FP32 outer scale FP32 mul (*hardware-unfriendly*)
                   NF4  : FP32 absmax dequant mul (**hardware-unfriendly**)
                   MX   : E8M0 scale broadcast (simple shift, shared)
   hw_fp_penalty Explicitly isolated FP-scale hardware penalty for
@@ -58,7 +58,7 @@ _COMP_LABELS = {
     "fwht":          "Hadamard Butterfly Unit (FWHT, add/sub only)",
     "sq_gs":         "SQ Gather/Scatter (compaction + priority encoder)",
     "decoder":       "Format Decoder (LUT / barrel-shift / E8M0 broadcast)",
-    "hw_fp_penalty": "HW-Unfriendly: FP Scale Mul (* NVFP4 BF16  ** NF4 FP32)",
+    "hw_fp_penalty": "HW-Unfriendly: FP Scale Mul (* NVFP4 FP32  ** NF4 FP32)",
 }
 
 
@@ -189,7 +189,7 @@ def plot_area_breakdown(out_dir: str = "results/figures") -> plt.Figure:
         "Figure 11: Hardware Area Breakdown per Scheme\n"
         "HAD+INT (C) and (T) share identical hardware — (C)/(T) scale granularity "
         "does not change silicon area  ·  ▶ = focus paradigm (MXINT / HAD+INT / SQ)\n"
-        "(*) NVFP4: BF16 outer scale → FP16 decode mul (hardware-unfriendly)  "
+        "(*) NVFP4: FP32 outer scale → FP32 decode mul (hardware-unfriendly)  "
         "(**) NF4: FP32 absmax dequant mul per element (hardware-unfriendly)",
         fontsize=9.0,
     )
