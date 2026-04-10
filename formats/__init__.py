@@ -27,7 +27,7 @@ from formats.mxfp import MXFPFormat
 from formats.mxint import MXINTFormat
 from formats.nf4 import NF4Format
 from formats.fp6 import FP6Format
-from formats.sq_format import SQFormat
+from formats.sq_format import SQFormat, SQFormatActivations
 
 # ── Transforms ────────────────────────────────────────────────────────────────
 from formats.transforms.hadamard import HADTransform
@@ -188,10 +188,17 @@ def build_all_formats(dim: int = 256, seed: int = 42) -> dict:
         "FP6":     FP6Format(),                   # secondary reference
 
         # ── SQ-Format (sparse-quantized, POT scales) ──────────────────────────
-        # 4-bit dense variant: primary research format
-        "SQ-Format":     SQFormat(dense_bits=4, sparse_bits=8, sparsity_ratio=0.01),
-        # 8-bit dense variant: ablation to compare 4b vs 8b dense component
-        "SQ-Format(8b)": SQFormat(dense_bits=8, sparse_bits=8, sparsity_ratio=0.01),
+        # Algorithm 1 (weight quantization), bank-based, element-level importance.
+        # sparsity_ratio=0.01 → 1% of elements per bank are high-precision (s=0.99).
+        # This is kept for backward compatibility; see SQ-Format(s=0.5) for the
+        # paper's canonical 2:4-equivalent configuration (s=0.5, b=128).
+        "SQ-Format":       SQFormat(dense_bits=4, sparse_bits=8, sparsity_ratio=0.01),
+        "SQ-Format(8b)":   SQFormat(dense_bits=8, sparse_bits=8, sparsity_ratio=0.01),
+        # Paper-faithful configuration: s=0.5 (50% high-prec, 50% low-prec, b=128)
+        "SQ-Format(s=0.5)": SQFormat(bank_size=128, sparsity=0.5, high_bits=8, low_bits=4),
+        # Algorithm 2 (activation quantization): per-channel importance Ij=|Āj·ΣW'|
+        "SQ-Format-A":     SQFormatActivations(bank_size=128, sparsity=0.5,
+                                               high_bits=8, low_bits=4),
 
         # ── HAD + INT per-channel (C) — PRIMARY focus format ─────────────────
         # Per-channel quantization after HAD: each output channel gets its own
