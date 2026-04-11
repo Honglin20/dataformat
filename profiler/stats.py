@@ -10,7 +10,7 @@ import numpy as np
 
 
 class WelfordStats:
-    """Welford's online algorithm for mean and variance.
+    """Welford's online algorithm for mean and standard deviation.
 
     Supports batch updates (parallel Welford combination).
     Tracks absolute maximum value (not quantization error).
@@ -103,6 +103,11 @@ class QuantStats:
     def update(self, x_orig: np.ndarray, x_quant: np.ndarray) -> None:
         x_orig = x_orig.astype(np.float64).ravel()
         x_quant = x_quant.astype(np.float64).ravel()
+        if x_orig.shape != x_quant.shape:
+            raise ValueError(
+                f"x_orig and x_quant must have the same number of elements after ravel, "
+                f"got {x_orig.shape} vs {x_quant.shape}"
+            )
         err = x_orig - x_quant
         self._sum_sq_err += float(np.sum(err ** 2))
         self._sum_sq_orig += float(np.sum(x_orig ** 2))
@@ -119,7 +124,7 @@ class QuantStats:
         if mse == 0.0:
             snr_db = float("inf")
             eff_bits = float("inf")
-        elif var <= 0.0 or var <= mse:
+        elif var <= 0.0:
             snr_db = 0.0
             eff_bits = 0.0
         else:

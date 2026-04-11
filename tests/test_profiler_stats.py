@@ -103,3 +103,19 @@ class TestQuantStats:
         import math
         for v in r.values():
             assert math.isnan(v)
+
+    def test_negative_snr_when_error_exceeds_signal(self):
+        """SNR must be negative (not clamped to 0) when quant error > signal variance."""
+        s = QuantStats()
+        # Signal near zero, huge quantization error
+        orig = np.array([0.01, -0.01])
+        quant = np.array([1.0, -1.0])
+        s.update(orig, quant)
+        r = s.finalize()
+        assert r["snr_db"] < 0.0, f"Expected negative SNR, got {r['snr_db']}"
+        assert r["eff_bits"] < 0.0, f"Expected negative eff_bits, got {r['eff_bits']}"
+
+    def test_shape_mismatch_raises(self):
+        s = QuantStats()
+        with pytest.raises(ValueError):
+            s.update(np.array([1.0, 2.0, 3.0]), np.array([1.0, 2.0]))
