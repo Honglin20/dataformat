@@ -20,6 +20,7 @@ import torch.nn as nn
 
 from profiler.formats import build_profiler_formats
 from profiler.stats import WelfordStats, RunningHistogram, QuantStats
+from profiler.export import export_csv as _export_csv
 
 
 def _to_numpy(tensor: torch.Tensor) -> np.ndarray:
@@ -203,6 +204,10 @@ class ModelProfiler:
             self._n_batches[fmt_name] = self._n_batches.get(fmt_name, 0) + 1
 
         self._batch_counter_hook = self._model.register_forward_pre_hook(_count_batch)
+
+    def export_csv(self, output_dir: str, filename: str = "profiler_results.csv") -> str:
+        """Export all recorded stats to a CSV file. Returns the path."""
+        return _export_csv(self, output_dir, filename)
 
     def _deregister_hooks(self) -> None:
         for h in self._hooks:
