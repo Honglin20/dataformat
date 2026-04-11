@@ -37,7 +37,7 @@ class TestExportCSV:
             csv_path = [os.path.join(d, f) for f in os.listdir(d) if f.endswith(".csv")][0]
             df = pd.read_csv(csv_path)
             required = {
-                "format", "layer_name", "layer_type", "bits",
+                "format", "layer_name", "layer_type", "tensor_type", "bits",
                 "mse", "snr_db", "eff_bits", "max_ae",
                 "mean", "std", "outlier_ratio", "n_batches", "n_elements",
             }

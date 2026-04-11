@@ -89,4 +89,4 @@ def export_csv(
     os.makedirs(output_dir, exist_ok=True)
     path = os.path.join(output_dir, filename)
     df.to_csv(path, index=False)
-    return path
+    return os.path.abspath(path)
