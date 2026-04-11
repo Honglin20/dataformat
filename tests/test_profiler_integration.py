@@ -69,6 +69,7 @@ class TestFullProfileRun:
         weight_df = df[df["tensor_type"] == "weight"]
         fp32_mse = weight_df[weight_df["format"] == "FP32"]["mse"].mean()
         int4_mse = weight_df[weight_df["format"] == "INT4(TENSOR)"]["mse"].mean()
+        assert not pd.isna(fp32_mse), "FP32 quant stats missing — silent exception in _TensorStats.update()"
         assert fp32_mse == 0.0
         assert int4_mse > fp32_mse
 
@@ -95,5 +96,6 @@ class TestFullProfileRun:
             pass
         # Hooks must be cleaned up
         assert len(p._hooks) == 0
+        assert p._batch_counter_hook is None
         # Format should NOT have advanced (exception path)
         assert p.current_format_name == "FP32"
