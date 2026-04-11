@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from formats.baseline import FP32Format, BF16Format
+from formats.baseline import FP32Format, BF16Format, FP16Format
 from formats.mxint import MXINTFormat
 from formats.sq_format import SQFormat, SQFormatActivations
 from formats.transforms.hadamard import HADTransform
@@ -41,7 +41,7 @@ def build_profiler_formats() -> list[tuple[str, object]]:
 
     formats = [
         ("FP32",          FP32Format()),
-        ("FP16",          BF16Format()),
+        ("FP16",          FP16Format()),
         ("SQ-FORMAT-INT", SQFormat(dense_bits=4, sparse_bits=8, sparsity_ratio=0.01)),
         ("SQ-FORMAT-FP",  SQFormatActivations(bank_size=128, sparsity=0.5,
                                                high_bits=8, low_bits=4)),
