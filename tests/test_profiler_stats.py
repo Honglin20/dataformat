@@ -54,6 +54,20 @@ class TestRunningHistogram:
         r1, r2 = h1.finalize(), h2.finalize()
         assert sum(r1["hist_counts"]) == sum(r2["hist_counts"])
 
+    def test_range_fixed_after_first_batch(self):
+        h = RunningHistogram()
+        h.update(np.array([0.0, 1.0]))   # sets range [0, 1]
+        edges_after_first = list(h._edges)
+        h.update(np.array([-10.0, 100.0]))  # wider range, should NOT expand edges
+        assert list(h._edges) == edges_after_first
+
+    def test_empty_returns_zero_outlier_ratio(self):
+        h = RunningHistogram()
+        r = h.finalize()
+        assert r["outlier_ratio"] == 0.0
+        assert r["hist_counts"] == []
+        assert r["hist_edges"] == []
+
 
 class TestQuantStats:
     def test_perfect_reconstruction(self):
@@ -81,3 +95,11 @@ class TestQuantStats:
         s2.update(np.array([1.0, 2.0, 3.0, 4.0]), np.array([1.1, 2.1, 3.1, 4.1]))
         r1, r2 = s1.finalize(), s2.finalize()
         assert abs(r1["mse"] - r2["mse"]) < 1e-9
+
+    def test_empty_returns_nan_dict(self):
+        s = QuantStats()
+        r = s.finalize()
+        assert set(r.keys()) == {"mse", "snr_db", "eff_bits", "max_ae"}
+        import math
+        for v in r.values():
+            assert math.isnan(v)
