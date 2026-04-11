@@ -23,12 +23,13 @@ from profiler.stats import WelfordStats, RunningHistogram, QuantStats
 
 
 def _to_numpy(tensor: torch.Tensor) -> np.ndarray:
-    """Convert a torch Tensor to numpy array, compatible with numpy 2.x."""
+    """Convert a torch.Tensor to a numpy array, handling numpy version issues."""
     try:
         return tensor.detach().cpu().numpy()
     except RuntimeError:
-        # Fallback when torch was built against numpy 1.x but numpy 2.x is installed
-        return np.array(tensor.detach().cpu().tolist(), dtype=np.float32)
+        # Fallback: preserve original dtype via numpy inference from list
+        arr = np.array(tensor.detach().cpu().tolist())
+        return arr.astype(np.float32) if arr.dtype.kind == 'f' else arr
 
 
 class _TensorStats:
@@ -105,9 +106,23 @@ class ModelProfiler:
             self._n_batches[fmt_name] = 0
         self._register_hooks(fmt_name, fmt_obj)
 
+    def cleanup(self) -> None:
+        """Remove all registered hooks. Safe to call multiple times."""
+        self._deregister_hooks()
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # Always clean up hooks (exception or not)
+        # Do NOT call stop() here — user calls stop() explicitly on clean path
+        self.cleanup()
+        return False  # do not suppress exceptions
+
     def stop(self) -> None:
         """Finalize current format and advance to the next. Call after inference."""
-        self._deregister_hooks()
+        self.cleanup()
         self._format_idx += 1
 
     def wrap(self, fn: Callable, name: str) -> Callable:

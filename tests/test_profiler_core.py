@@ -48,6 +48,26 @@ class TestProfilerInit:
         p.stop()
         assert p.current_format_name == "FP16"
 
+    def test_done_raises_on_current_format_name(self):
+        model = _make_model()
+        p = ModelProfiler(model)
+        while not p.done:
+            p.start()
+            _run_batches(model, n=1)
+            p.stop()
+        with pytest.raises(RuntimeError):
+            _ = p.current_format_name
+
+    def test_start_raises_when_done(self):
+        model = _make_model()
+        p = ModelProfiler(model)
+        while not p.done:
+            p.start()
+            _run_batches(model, n=1)
+            p.stop()
+        with pytest.raises(RuntimeError):
+            p.start()
+
 
 class TestProfilerHooks:
     def test_hooks_registered_after_start(self):
@@ -67,6 +87,13 @@ class TestProfilerHooks:
 
     def test_no_hooks_before_start(self):
         p = ModelProfiler(_make_model())
+        assert len(p._hooks) == 0
+
+    def test_cleanup_removes_hooks(self):
+        model = _make_model()
+        p = ModelProfiler(model)
+        p.start()
+        p.cleanup()
         assert len(p._hooks) == 0
 
 
