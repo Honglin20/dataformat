@@ -23,6 +23,7 @@ from examples.model import MNISTTransformer
 
 def get_loaders(batch_size: int = 256, data_dir: str = "~/.cache/mnist"):
     from torchvision import datasets, transforms
+    data_dir = os.path.expanduser(data_dir)
     tf = transforms.ToTensor()
     train_ds = datasets.MNIST(data_dir, train=True,  download=True, transform=tf)
     test_ds  = datasets.MNIST(data_dir, train=False, download=True, transform=tf)
@@ -88,6 +89,8 @@ def main():
         log["epoch"].append(epoch)
         log["train_loss"].append(round(tr_loss, 4))
         log["test_loss"].append(round(te_loss, 4))
+        # Note: train_acc and test_acc are stored as percentages (0–100), not fractions.
+        # This matches the expected input format for generate_report.py.
         log["train_acc"].append(round(tr_acc * 100, 2))
         log["test_acc"].append(round(te_acc * 100, 2))
 
