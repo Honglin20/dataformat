@@ -209,6 +209,11 @@ class ModelProfiler:
         """Export all recorded stats to a CSV file. Returns the path."""
         return _export_csv(self, output_dir, filename)
 
+    def export_histograms(self, output_dir: str, filename: str = "profiler_histograms.json") -> str:
+        """Export per-layer histogram data as JSON. Returns the path."""
+        from profiler.export import export_histograms as _export_histograms
+        return _export_histograms(self, output_dir, filename)
+
     def _deregister_hooks(self) -> None:
         for h in self._hooks:
             h.remove()

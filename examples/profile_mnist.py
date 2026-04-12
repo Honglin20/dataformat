@@ -60,6 +60,7 @@ def run_profiling(
         profiler.stop()
 
     print(f"  Done — {total} formats profiled.{' ' * 20}")
+    profiler.export_histograms(out_dir)
     return profiler.export_csv(out_dir)
 
 

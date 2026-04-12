@@ -7,6 +7,7 @@ Output schema (one row per format × layer × tensor_type):
 """
 from __future__ import annotations
 
+import json
 import os
 from typing import TYPE_CHECKING
 
@@ -89,4 +90,42 @@ def export_csv(
     os.makedirs(output_dir, exist_ok=True)
     path = os.path.join(output_dir, filename)
     df.to_csv(path, index=False)
+    return os.path.abspath(path)
+
+
+def export_histograms(
+    profiler: "ModelProfiler",
+    output_dir: str,
+    filename: str = "profiler_histograms.json",
+) -> str:
+    """Write per-layer histogram data to a JSON file.
+
+    Output schema:
+      {format_name: {layer_name: {tensor_type: {hist_counts, hist_edges, outlier_ratio}}}}
+
+    Returns
+    -------
+    str
+        Absolute path to the written JSON file.
+    """
+    data: dict = {}
+    for fmt_name, layer_dict in profiler._data.items():
+        data[fmt_name] = {}
+        for layer_name, tensor_dict in layer_dict.items():
+            data[fmt_name][layer_name] = {}
+            for tensor_type, ts in tensor_dict.items():
+                try:
+                    h = ts.hist.finalize()
+                    data[fmt_name][layer_name][tensor_type] = {
+                        "hist_counts": h["hist_counts"],
+                        "hist_edges":  h["hist_edges"],
+                        "outlier_ratio": h["outlier_ratio"],
+                    }
+                except Exception:
+                    pass
+
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, filename)
+    with open(path, "w") as f:
+        json.dump(data, f)
     return os.path.abspath(path)
