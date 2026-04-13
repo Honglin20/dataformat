@@ -37,13 +37,15 @@ class MXINTFormat:
             return np.zeros_like(block)
 
         # OCP MX E8M0 scale: 2^(floor(log2(max_abs)) - (bits-2))
-        # This guarantees q_max * scale ≥ max_abs (no clipping of the block max).
+        # Equivalently: floor(log2(max_abs)) - floor(log2(q_max)), since
+        #   floor(log2(2^(bits-1)-1)) = bits-2  for bits ∈ {4,8}.
         #
-        # Why NOT floor(log2(max_abs / q_max)):
-        #   log2(q_max) = log2(2^(bits-1)-1) ≈ bits-1-ε  (e.g. log2(127)≈6.99)
-        #   floor(log2(max_abs) - 6.99) = floor(log2(max_abs)) - 7  for most max_abs
-        #   but OCP requires  floor(log2(max_abs)) - 6  for bits=8
-        #   → the naive formula gives scale 2× too small → clips ~5% of N(0,1) elements
+        # NOTE: this does NOT guarantee no clipping for INT4.  When max_abs ∈
+        #   (q_max·scale, 2·q_max·scale) = (1.75·2^k, 2^(k+1)) the block max
+        #   exceeds q_max·scale and gets clipped (~12.5% of the per-octave range).
+        #   For INT8 the clip window is only ~1.6% (127/128 ≈ 0.992 coverage).
+        #   Both INT-PerChannel and MXINT use the same formula, so comparisons
+        #   between them are fair despite the systematic underflow.
         log2_max = np.floor(np.log2(max_abs + 1e-38))
         scale = 2.0 ** (log2_max - (self.element_bits - 2))
 
