@@ -689,3 +689,174 @@ class SQFormatActivations:
             "sparsity":                  self.sparsity,
             "bandwidth_amplification":   total / self.low_bits,
         }
+
+
+# ── SQ-Format-FP: FP8 E4M3 high-precision + INT low-precision ─────────────────
+
+class SQFormatFP:
+    """SQ-Format variant using FP8 E4M3 for high-precision elements.
+
+    Same bank-based importance selection as SQFormat (Algorithm 1), but the
+    top (1-s) fraction of elements per bank are quantized to FP8 E4M3 with
+    an E8M0 shared scale, rather than INT8.  The remaining s fraction uses
+    INT low-precision with a POT scale.
+
+    This gives better dynamic range for the high-precision stream (FP8 covers
+    6× more orders of magnitude than INT8 for the same bit-width), at the cost
+    of the element-level non-uniformity that FP quantization introduces.
+
+    Parameters
+    ----------
+    bank_size : int   — elements per bank (b). Default 128.
+    sparsity  : float — fraction using low precision (s). Default 0.5.
+    low_bits  : int   — low-precision INT bit-width. Default 4.
+    """
+
+    _FP8_E4M3_MAX = 448.0
+    _LOG2_FP8_MAX = 8  # floor(log2(448)) = 8
+
+    def __init__(self, bank_size: int = 128, sparsity: float = 0.5, low_bits: int = 4):
+        self.bank_size = bank_size
+        self.sparsity  = sparsity
+        self.low_bits  = low_bits
+        self.name      = "SQ-Format-FP"
+        self.bits      = low_bits
+        self._q_max_l  = 2 ** (low_bits - 1) - 1
+        self._last_bank_scales: list = []
+
+    def _fp8_e8m0_scale(self, absmax: float) -> float:
+        """E8M0 scale for FP8 E4M3: 2^(floor(log2(absmax)) - 8)."""
+        if absmax <= 0:
+            return 1.0
+        log2_abs = int(np.floor(np.log2(float(absmax) + 1e-38)))
+        return float(2.0 ** (log2_abs - self._LOG2_FP8_MAX))
+
+    def _quantize_fp8_group(self, vals: np.ndarray) -> np.ndarray:
+        """Quantize a group of values to FP8 E4M3 with a shared E8M0 scale."""
+        from formats.mxfp import _fp8_e4m3_vec
+        absmax = float(np.max(np.abs(vals)))
+        if absmax == 0:
+            return np.zeros_like(vals)
+        scale = self._fp8_e8m0_scale(absmax)
+        return _fp8_e4m3_vec(vals / scale) * scale
+
+    def _bank_mask_1d(self, importance: np.ndarray, bsz: int) -> np.ndarray:
+        k_high = min(max(1, int(np.round((1.0 - self.sparsity) * bsz))), bsz)
+        if k_high >= bsz:
+            return np.ones(bsz, dtype=bool)
+        mask = np.zeros(bsz, dtype=bool)
+        mask[np.argpartition(importance, -k_high)[-k_high:]] = True
+        return mask
+
+    def quantize(self, W: np.ndarray, bits: int = None) -> np.ndarray:
+        W = W.astype(np.float32)
+        importance = W ** 2
+        self._last_bank_scales = []
+
+        if W.ndim == 2:
+            return self._quantize_2d(W, importance)
+        else:
+            return self._quantize_1d(W.ravel(), importance.ravel()).reshape(W.shape)
+
+    def _quantize_2d(self, W: np.ndarray, importance: np.ndarray) -> np.ndarray:
+        """2D path: bank_size elements per output column, FP8 high / INT low."""
+        K, N = W.shape
+        K_pad = int(np.ceil(K / self.bank_size)) * self.bank_size
+        pad   = K_pad - K
+        n_kb  = K_pad // self.bank_size
+
+        if pad > 0:
+            W_work   = np.vstack([W,          np.zeros((pad, N), dtype=np.float32)])
+            imp_work = np.vstack([importance,  np.zeros((pad, N), dtype=np.float32)])
+        else:
+            W_work, imp_work = W, importance
+
+        W_blk   = W_work.reshape(n_kb, self.bank_size, N)
+        imp_blk = imp_work.reshape(n_kb, self.bank_size, N)
+
+        q_max_l     = self._q_max_l
+        k_high      = min(max(1, int(np.round((1.0 - self.sparsity) * self.bank_size))), self.bank_size)
+        thresh_rank = self.bank_size - k_high
+
+        result_blk = np.zeros((n_kb, self.bank_size, N), dtype=np.float32)
+
+        for kb in range(n_kb):
+            W_b   = W_blk[kb]    # (bank_size, N)
+            imp_b = imp_blk[kb]
+
+            rank_b = np.argsort(np.argsort(imp_b, axis=0), axis=0)
+            mask_b = rank_b >= thresh_rank  # True = high-prec (FP8)
+
+            dq_h = np.zeros_like(W_b)
+            dq_l = np.zeros_like(W_b)
+
+            # High-precision: FP8 E4M3 with per-column E8M0 scale
+            for n in range(N):
+                col_vals = W_b[:, n][mask_b[:, n]]
+                if len(col_vals) > 0:
+                    dq_h[mask_b[:, n], n] = self._quantize_fp8_group(col_vals)
+
+            # Low-precision: INT with per-column POT scale
+            for n in range(N):
+                col_vals = W_b[:, n][~mask_b[:, n]]
+                if len(col_vals) > 0:
+                    absmax = float(np.max(np.abs(col_vals)))
+                    scale  = _pot_scale(absmax, q_max_l)
+                    q      = np.clip(np.round(col_vals / scale).astype(np.int32), -q_max_l, q_max_l)
+                    dq_l[~mask_b[:, n], n] = q.astype(np.float32) * scale
+
+            result_blk[kb] = dq_h + dq_l
+            self._last_bank_scales.append({
+                "n_high": int(mask_b.sum()),
+                "n_low":  int((~mask_b).sum()),
+            })
+
+        return result_blk.reshape(K_pad, N)[:K]
+
+    def _quantize_1d(self, flat: np.ndarray, importance: np.ndarray) -> np.ndarray:
+        """1D path: contiguous element banks."""
+        n = len(flat)
+        result = np.zeros(n, dtype=np.float32)
+
+        for start in range(0, n, self.bank_size):
+            end      = min(start + self.bank_size, n)
+            bsz      = end - start
+            bank_W   = flat[start:end]
+            bank_imp = importance[start:end]
+
+            mask = self._bank_mask_1d(bank_imp, bsz)
+            bank_r = np.zeros(bsz, dtype=np.float32)
+
+            if np.any(mask):
+                bank_r[mask] = self._quantize_fp8_group(bank_W[mask])
+            if np.any(~mask):
+                vals   = bank_W[~mask]
+                absmax = float(np.max(np.abs(vals)))
+                scale  = _pot_scale(absmax, self._q_max_l)
+                q      = np.clip(np.round(vals / scale).astype(np.int32), -self._q_max_l, self._q_max_l)
+                bank_r[~mask] = q.astype(np.float32) * scale
+
+            self._last_bank_scales.append({
+                "n_high": int(np.sum(mask)),
+                "n_low":  int(np.sum(~mask)),
+            })
+            result[start:end] = bank_r
+
+        return result
+
+    def dequantize(self, q: np.ndarray) -> np.ndarray:
+        return q.astype(np.float32)
+
+    def encoding_overhead(self) -> dict:
+        high_frac = 1.0 - self.sparsity
+        low_frac  = self.sparsity
+        # FP8 high-prec = 8 bits; low-prec = low_bits INT
+        total = high_frac * 8.0 + low_frac * self.low_bits
+        return {
+            "data_bits_per_element":     total,
+            "metadata_bits_per_element": 0.0,  # sentinel in low-prec stream
+            "high_bits":                 8,
+            "low_bits":                  self.low_bits,
+            "sparsity":                  self.sparsity,
+            "bandwidth_amplification":   total / self.low_bits,
+        }

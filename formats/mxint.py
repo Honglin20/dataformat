@@ -57,27 +57,32 @@ class MXINTFormat:
         # Dequantize
         return q_int.astype(np.float32) * scale
 
-    def quantize(self, x: np.ndarray, bits: int = None) -> np.ndarray:
-        x = x.astype(np.float32)
-        flat = x.ravel()
+    def _quantize_1d(self, flat: np.ndarray) -> np.ndarray:
+        """Quantize a 1-D float32 array block-by-block."""
         n = len(flat)
-        out = np.zeros_like(flat)
-
+        out = np.zeros(n, dtype=np.float32)
         pad = (-n) % self.block_size
         padded = np.concatenate([flat, np.zeros(pad, dtype=np.float32)])
-
         for i in range(0, len(padded), self.block_size):
             block = padded[i:i + self.block_size]
             out_block = self._quantize_block(block)
-            start = i
             end = min(i + self.block_size, n)
-            out[start:end] = out_block[:end - start]
+            out[i:end] = out_block[:end - i]
+        return out
 
+    def quantize(self, x: np.ndarray, bits: int = None) -> np.ndarray:
+        x = x.astype(np.float32)
+        n = x.size
+        if x.ndim == 2:
+            # Apply block quantization independently per row (output channel).
+            # Flattening across rows would cause cross-channel contamination.
+            out = np.stack([self._quantize_1d(row) for row in x])
+        else:
+            out = self._quantize_1d(x.ravel()).reshape(x.shape)
         n_blocks = int(np.ceil(n / self.block_size))
         self._metadata_bits = n_blocks * 8
         self._n_elements = n
-
-        return out.reshape(x.shape)
+        return out
 
     def dequantize(self, q: np.ndarray) -> np.ndarray:
         return q.astype(np.float32)

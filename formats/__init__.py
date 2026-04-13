@@ -21,13 +21,13 @@ import numpy as np
 from scipy.stats import norm as _norm_dist
 
 # ── Plain formats ──────────────────────────────────────────────────────────────
-from formats.baseline import FP32Format, BF16Format
+from formats.baseline import FP32Format, BF16Format, FP16Format
 from formats.nvfp4 import NVFP4Format
 from formats.mxfp import MXFPFormat
 from formats.mxint import MXINTFormat
 from formats.nf4 import NF4Format
 from formats.fp6 import FP6Format
-from formats.sq_format import SQFormat, SQFormatActivations
+from formats.sq_format import SQFormat, SQFormatActivations, SQFormatFP
 
 # ── Transforms ────────────────────────────────────────────────────────────────
 from formats.transforms.hadamard import HADTransform
@@ -173,10 +173,15 @@ def build_all_formats(dim: int = 256, seed: int = 42) -> dict:
         # ── High-precision baselines ──────────────────────────────────────────
         "FP32":  FP32Format(),
         "BF16":  BF16Format(),
+        "FP16":  FP16Format(),
 
         # ── Plain INT (POT scale, hardware-friendly) ──────────────────────────
-        "INT4":  _POTINTQuantizer(4, per_channel=False),
-        "INT8":  _POTINTQuantizer(8, per_channel=False),
+        "INT4":    _POTINTQuantizer(4, per_channel=False),
+        "INT8":    _POTINTQuantizer(8, per_channel=False),
+        "INT4(T)": _POTINTQuantizer(4, per_channel=False),
+        "INT4(C)": _POTINTQuantizer(4, per_channel=True),
+        "INT8(T)": _POTINTQuantizer(8, per_channel=False),
+        "INT8(C)": _POTINTQuantizer(8, per_channel=True),
 
         # ── Hardware-native formats ───────────────────────────────────────────
         "MXINT4":  MXINTFormat(element_bits=4),
@@ -186,6 +191,12 @@ def build_all_formats(dim: int = 256, seed: int = 42) -> dict:
         "NVFP4":   NVFP4Format(),
         "NF4":     NF4Format(),
         "FP6":     FP6Format(),                   # secondary reference
+
+        # ── SQ-Format-INT / SQ-Format-FP (exp1 canonical configs) ───────────
+        # Fixed configuration: high_bits=8, low_bits=4, bank_size=128, sparsity=0.5
+        # Appears in both 4-bit and 8-bit exp1 sections (unchanged per user spec).
+        "SQ-Format-INT": SQFormat(bank_size=128, sparsity=0.5, high_bits=8, low_bits=4),
+        "SQ-Format-FP":  SQFormatFP(bank_size=128, sparsity=0.5, low_bits=4),
 
         # ── SQ-Format (sparse-quantized, POT scales) ──────────────────────────
         # Algorithm 1 (weight quantization), bank-based, element-level importance.

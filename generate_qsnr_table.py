@@ -35,27 +35,27 @@ all_dists = [d for _, dists in dist_groups for d in dists]
 
 # Format display names and order
 formats_4bit = [
-    ("FP16",              "FP16"),
-    ("SQ-Format-INT4",    "SQ-FORMAT-INT"),
-    ("SQ-Format-FP4",     "SQ-FORMAT-FP"),
-    ("INT4-PerTensor",    "INT4(TENSOR)"),
-    ("INT4-PerChannel",   "INT4(CHANNEL)"),
-    ("HAD+INT4-PerTensor","HAD+INT4(T)"),
-    ("HAD+INT4-PerChannel","HAD+INT4(C)"),
-    ("MXINT4",            "MXINT4"),
-    ("MXFP4",             "MXFP4"),
+    ("FP16",           "FP16"),
+    ("SQ-Format-INT",  "SQ-FORMAT-INT"),
+    ("SQ-Format-FP",   "SQ-FORMAT-FP"),
+    ("INT4(T)",        "INT4(T)"),
+    ("INT4(C)",        "INT4(C)"),
+    ("HAD+INT4(T)",    "HAD+INT4(T)"),
+    ("HAD+INT4(C)",    "HAD+INT4(C)"),
+    ("MXINT4",         "MXINT4"),
+    ("MXFP4",          "MXFP4"),
 ]
 
 formats_8bit = [
-    ("FP16",              "FP16"),
-    ("SQ-Format-INT8",    "SQ-FORMAT-INT"),
-    ("SQ-Format-FP8",     "SQ-FORMAT-FP"),
-    ("INT8-PerTensor",    "INT8(TENSOR)"),
-    ("INT8-PerChannel",   "INT8(CHANNEL)"),
-    ("HAD+INT8-PerTensor","HAD+INT8(T)"),
-    ("HAD+INT8-PerChannel","HAD+INT8(C)"),
-    ("MXINT8",            "MXINT8"),
-    ("MXFP8",             "MXFP8"),
+    ("FP16",           "FP16"),
+    ("SQ-Format-INT",  "SQ-FORMAT-INT"),
+    ("SQ-Format-FP",   "SQ-FORMAT-FP"),
+    ("INT8(T)",        "INT8(T)"),
+    ("INT8(C)",        "INT8(C)"),
+    ("HAD+INT8(T)",    "HAD+INT8(T)"),
+    ("HAD+INT8(C)",    "HAD+INT8(C)"),
+    ("MXINT8",         "MXINT8"),
+    ("MXFP8",          "MXFP8"),
 ]
 
 def get_color(val, vmin, vmax):
