@@ -158,6 +158,76 @@ python examples/generate_report.py [--results-dir results/mnist]
 
 ---
 
+## Profiler API
+
+`ModelProfiler` (`profiler/profiler.py`) hooks into any PyTorch model non-intrusively and records per-layer tensor statistics (mean, std, SNR, EffBits, outlier ratio) for each of 14 quantization formats.
+
+### Basic usage
+
+```python
+from profiler import ModelProfiler
+
+profiler = ModelProfiler(model)           # wraps all leaf modules
+
+while not profiler.done:
+    profiler.start()                      # install hooks for current format
+    with torch.no_grad():
+        for x, _ in dataloader:
+            model(x)                      # runs forward pass; hooks capture tensors
+    profiler.stop()                       # remove hooks, advance to next format
+
+csv_path = profiler.export_csv("results/")
+```
+
+### Context manager (single format)
+
+```python
+profiler = ModelProfiler(model, formats=[("INT4(C)", my_fmt)])
+with profiler:
+    model(x)
+profiler.stop()
+```
+
+### Targeting specific layer types
+
+```python
+profiler = ModelProfiler(model, target_layers=[nn.Linear])
+```
+
+### Profiling functional ops
+
+```python
+output = profiler.wrap(torch.matmul, "attn_qk")(q, k)
+```
+
+### Output schema — `profiler_results.csv`
+
+| Column | Description |
+|--------|-------------|
+| `format` | Format name (e.g. `HAD+INT4(C)`) |
+| `layer_name` | Named module path (e.g. `encoder.0.fc1`) |
+| `layer_type` | PyTorch class name (e.g. `Linear`) |
+| `tensor_type` | `weight`, `input`, or `output` |
+| `bits` | Nominal bit-width |
+| `snr_db` | Signal-to-quantization-noise ratio (dB) |
+| `eff_bits` | Effective bits = 0.5 log₂(signal\_var / MSE) |
+| `mse` | Mean squared quantization error |
+| `max_ae` | Maximum absolute error per layer |
+| `mean` / `std` | Raw tensor statistics (pre-quantization) |
+| `outlier_ratio` | Fraction of elements outside the initial histogram range |
+
+### Generating the HTML report
+
+```bash
+python examples/generate_report.py --results-dir results/mnist
+```
+
+The report includes 11 sections: training curves, FP32 distributions, outlier analysis, linear vs non-linear SQNR gap, per-layer sensitivity heatmaps (weight / input / output), format efficiency scatter, EffBits ranking, SNR comparison, and a full summary table with per-tensor-type SNR breakdown.
+
+When a model has more than 30 layers, sensitivity heatmaps automatically select the 30 most sensitive layers (highest cross-format SNR variance) and label the figure accordingly.
+
+---
+
 ## Configuration
 
 ### Global constants — `config.py`

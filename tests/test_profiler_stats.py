@@ -99,7 +99,8 @@ class TestQuantStats:
     def test_empty_returns_nan_dict(self):
         s = QuantStats()
         r = s.finalize()
-        assert set(r.keys()) == {"mse", "snr_db", "eff_bits", "max_ae"}
+        # All keys must be present and NaN
+        assert set(r.keys()) == {"mse", "snr_db", "eff_bits", "max_ae", "mare", "saturation_rate"}
         import math
         for v in r.values():
             assert math.isnan(v)

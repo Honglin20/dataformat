@@ -105,6 +105,40 @@ class _POTINTQuantizer:
         q = np.clip(q, -self._q_max, self._q_max)
         return q.astype(np.float32) * scale
 
+    def quantize_with_metadata(self, x: np.ndarray) -> dict:
+        """Like quantize() but also returns saturation_mask, scale statistics, and transformed tensor."""
+        x = x.astype(np.float32)
+        if self.per_channel and x.ndim > 1:
+            absmax = np.max(np.abs(x), axis=-1, keepdims=True)
+        else:
+            absmax = np.max(np.abs(x))
+
+        if np.ndim(absmax) == 0:
+            scale = _pot_scale(float(absmax), self._q_max)
+            scale_arr = np.full(x.shape, scale, dtype=np.float32)
+        else:
+            absmax_flat = absmax.ravel()
+            scales_flat = np.array(
+                [_pot_scale(float(v), self._q_max) for v in absmax_flat], dtype=np.float32
+            )
+            scale = scales_flat.reshape(absmax.shape)
+            scale_arr = np.broadcast_to(scale, x.shape).copy()
+
+        scale_safe = np.maximum(scale, 1e-38)
+        q_raw = np.round(x / scale_safe)
+        saturated = np.abs(q_raw) > self._q_max          # elements that will be clipped
+        q_clipped = np.clip(q_raw, -self._q_max, self._q_max).astype(np.int32)
+        x_q = q_clipped.astype(np.float32) * scale_safe
+
+        return {
+            "quantized":       x_q,
+            "saturation_mask": saturated,
+            "saturation_rate": float(np.mean(saturated)),
+            "scale_mean":      float(np.mean(scale_arr)),
+            "scale_std":       float(np.std(scale_arr)),
+            "transformed":     None,   # no pre-transform for plain INT
+        }
+
     def dequantize(self, q: np.ndarray) -> np.ndarray:
         return q.astype(np.float32)
 
@@ -170,6 +204,29 @@ class ComposedFormat:
         x_t = self._transform.forward(x)
         q_t = self._quantizer.quantize(x_t)
         return self._transform.inverse(q_t)
+
+    def quantize_with_metadata(self, x: np.ndarray) -> dict:
+        """Transform → quantize_with_metadata → inverse transform.
+
+        The 'transformed' key in the returned dict holds the post-transform tensor
+        (e.g. HAD-domain values) so callers can record transform-domain statistics.
+        """
+        x_t = self._transform.forward(x)
+        if hasattr(self._quantizer, "quantize_with_metadata"):
+            meta = self._quantizer.quantize_with_metadata(x_t)
+            x_q = self._transform.inverse(meta["quantized"])
+            return {**meta, "quantized": x_q, "transformed": x_t}
+        # Fallback for quantizers without the method
+        x_q_t = self._quantizer.quantize(x_t)
+        x_q = self._transform.inverse(x_q_t)
+        return {
+            "quantized":       x_q,
+            "saturation_mask": None,
+            "saturation_rate": float("nan"),
+            "scale_mean":      float("nan"),
+            "scale_std":       float("nan"),
+            "transformed":     x_t,
+        }
 
     def dequantize(self, q: np.ndarray) -> np.ndarray:
         return q.astype(np.float32)
