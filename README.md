@@ -8,6 +8,71 @@ evaluated on 8 distribution families (24 variants).
 
 ---
 
+## 4-bit Format Study (`fourbit/`)
+
+A self-contained, config-driven study of six 4-bit formats (**INT4, FP4, NF4,
+NVFP4, MXINT4, MXFP4**) under three transforms (**base, smooth, had**). Code
+lives under `fourbit/`; the entry point is `run_4bit_study.py`.
+
+### Running
+
+```bash
+# Full study (Part 1 synthetic + Part 2 real MNIST Transformer)
+python run_4bit_study.py
+
+# Part 1 only (no model required)
+python run_4bit_study.py --part 1
+
+# Part 2 only (loads or trains results/mnist/model.pt)
+python run_4bit_study.py --part 2
+
+# Custom output directory
+python run_4bit_study.py --out results/fourbit_custom
+
+# Custom MNIST checkpoint / data cache
+python run_4bit_study.py --model-path path/to/model.pt --data-dir ~/.cache/mnist
+```
+
+### Outputs (`results/fourbit/`)
+
+| Path | Description |
+|------|-------------|
+| `part1/exp11_direct_quant.csv` | 1.1 — direct quantization of common distributions |
+| `part1/exp12_linear_wa.csv` | 1.2 — base-quantized linear Y = X Wᵀ on typical W/X pairs |
+| `part1/exp13_smooth_transforms.csv` | 1.3 — base/smooth/had on smooth-friendly pairs |
+| `part2/per_layer_metrics.csv` | flat per-layer × format × transform QSNR + tensor stats |
+| `figures/scatter_{input,output,weight}_{base,smooth,had}.png` | crest-factor vs QSNR scatter |
+| `report.md` | full markdown report (Part 1 tables + Part 2 figures/tables) |
+
+### Adding / removing formats
+
+All experiment code iterates over `fourbit/config.py → DEFAULT_CONFIG.formats`.
+To add or remove a format, edit that list — no other file needs to change,
+provided the format key is registered in `fourbit/formats.py → FORMAT_FACTORIES`:
+
+```python
+# fourbit/config.py
+DEFAULT_CONFIG = FourBitConfig(
+    formats=[
+        FormatSpec(display_name="INT4",   factory="int4_per_channel"),
+        FormatSpec(display_name="FP4",    factory="fp4_per_channel"),
+        FormatSpec(display_name="MyFmt4", factory="my_format_key"),  # ← add here
+        ...
+    ],
+    transforms=[
+        TransformSpec(display_name="base",   factory="identity"),
+        TransformSpec(display_name="smooth", factory="smoothquant", kwargs={"alpha": 0.5}),
+        TransformSpec(display_name="had",    factory="hadamard"),
+    ],
+    ...
+)
+```
+
+Transforms work the same way — add an entry to `TRANSFORM_FACTORIES` in
+`fourbit/transforms.py` and a `TransformSpec` in the config.
+
+---
+
 ## Project Structure
 
 ```
