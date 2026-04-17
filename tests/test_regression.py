@@ -72,19 +72,21 @@ def _compare_csv(got: Path, expected: Path) -> None:
             )
 
 
-def test_exp1_4bit(tmp_path):
+# NOTE: These tests are not parallel-safe (pytest-xdist). The invoked CLIs
+# write to the repo-root `results/` directory by design.
+def test_exp1_4bit():
     _run([sys.executable, "experiments/exp1_common_distributions.py", "--bits", "4"])
     _compare_csv(RESULTS / "exp1" / "results_4bit.csv",
                  GOLDEN  / "exp1" / "results_4bit.csv")
 
 
-def test_exp1_8bit(tmp_path):
+def test_exp1_8bit():
     _run([sys.executable, "experiments/exp1_common_distributions.py", "--bits", "8"])
     _compare_csv(RESULTS / "exp1" / "results_8bit.csv",
                  GOLDEN  / "exp1" / "results_8bit.csv")
 
 
-def test_exp2(tmp_path):
+def test_exp2():
     _run([sys.executable, "experiments/exp2_crest_factor.py"])
     for bits in (4, 8):
         _compare_csv(
@@ -93,7 +95,7 @@ def test_exp2(tmp_path):
         )
 
 
-def test_fourbit_part1(tmp_path):
+def test_fourbit_part1():
     _run([sys.executable, "run_4bit_study.py", "--part", "1"])
     for name in ("exp11_direct_quant.csv",
                  "exp12_linear_wa.csv",
