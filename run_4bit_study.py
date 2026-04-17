@@ -52,17 +52,23 @@ def main():
 
     part1_res = None
     part2_df = None
+    part2_acc_df = None
 
     if args.part in ("1", "all"):
         part1_res = part1.run_all(config)
 
     if args.part in ("2", "all"):
-        part2_df, _ = part2.run(config, model_path=args.model_path, data_dir=args.data_dir)
+        part2_df, _, part2_acc_df = part2.run(
+            config, model_path=args.model_path, data_dir=args.data_dir,
+        )
 
     # Only generate the full report when both parts were run in the same call.
     if args.part == "all" and part1_res is not None and part2_df is not None:
         report_path = os.path.join(out_dir, "report.md")
-        reporter.generate_report(config, part1_res, part2_df, report_path)
+        reporter.generate_report(
+            config, part1_res, part2_df, report_path,
+            accuracy_df=part2_acc_df,
+        )
         print(f"\n[Report] Written → {report_path}")
 
     print("\nDone.")

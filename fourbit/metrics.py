@@ -32,6 +32,24 @@ def qsnr_db(x: np.ndarray, x_hat: np.ndarray) -> float:
     return 10.0 * np.log10(var / mse)
 
 
+def fp16_quantize(x: np.ndarray) -> np.ndarray:
+    """Round-trip ``x`` through float16.
+
+    Used as the "infinite-precision" baseline against every 4-bit format:
+    FP16 QSNR is an upper bound on what any 4-bit scheme can achieve, and
+    also represents the industry-standard inference datatype that W4A4
+    replaces.  Both casts are exact (saturating) per IEEE-754 round-to-
+    nearest-even.
+    """
+    x = np.asarray(x, dtype=np.float32)
+    return x.astype(np.float16).astype(np.float32)
+
+
+def fp16_qsnr_db(x: np.ndarray) -> float:
+    """QSNR (dB) of FP16-rounded ``x`` vs FP32 ``x``.  Baseline precision."""
+    return qsnr_db(x, fp16_quantize(x))
+
+
 def mse(x: np.ndarray, x_hat: np.ndarray) -> float:
     x  = np.asarray(x,  dtype=np.float64)
     xh = np.asarray(x_hat, dtype=np.float64)

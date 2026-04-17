@@ -27,6 +27,7 @@ from torchvision import datasets, transforms
 
 from fourbit.config import FourBitConfig
 from fourbit.profiler_v2 import LayerCollector, analyse_all
+from fourbit.accuracy import accuracy_sweep
 
 
 # ── Model loading ────────────────────────────────────────────────────────────
@@ -79,18 +80,21 @@ def run(
     config: FourBitConfig,
     model_path: str = "results/mnist/model.pt",
     data_dir: str = "~/.cache/mnist",
-) -> Tuple[pd.DataFrame, dict]:
-    """Collect and analyse a real model.
+) -> Tuple[pd.DataFrame, dict, pd.DataFrame]:
+    """Collect and analyse a real model, then run the accuracy sweep.
 
     Returns
     -------
     metrics_df : pd.DataFrame
         One row per (layer, format, transform); columns include qsnr_w_db,
-        qsnr_x_db, qsnr_y_db and the raw tensor statistics (std, crest,
-        kurtosis, max_abs) prefixed by ``W_``/``X_``/``Y_``.
+        qsnr_x_db, qsnr_y_db, fp16_qsnr_{w,x,y}_db and the raw tensor
+        statistics prefixed by ``W_``/``X_``/``Y_``.
     layers : dict[str, LayerRecord]
         Raw collected tensors, handed on to the reporter for figure-level
         aggregation.
+    accuracy_df : pd.DataFrame
+        FP32 / FP16 baseline + every (format, transform) top-1 accuracy on
+        the same held-out MNIST test subset.
     """
     model = _load_or_train_model(model_path, data_dir)
     loader = _make_loader(data_dir, config.profile_samples)
@@ -108,4 +112,10 @@ def run(
     out_dir = os.path.join(config.output_dir, "part2")
     os.makedirs(out_dir, exist_ok=True)
     df.to_csv(os.path.join(out_dir, "per_layer_metrics.csv"), index=False)
-    return df, collector.layers
+
+    print("[Part 2] Running accuracy sweep over all (format, transform) ...")
+    acc_rows = accuracy_sweep(model, collector.layers, loader, config)
+    acc_df = pd.DataFrame(acc_rows)
+    acc_df.to_csv(os.path.join(out_dir, "accuracy_sweep.csv"), index=False)
+
+    return df, collector.layers, acc_df

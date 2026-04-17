@@ -63,12 +63,25 @@ class FourBitConfig:
 
 DEFAULT_CONFIG = FourBitConfig(
     formats=[
-        FormatSpec("INT4",   "int4_per_channel"),
-        FormatSpec("FP4",    "fp4_per_channel"),
-        FormatSpec("NF4",    "nf4_per_channel"),
-        FormatSpec("NVFP4",  "nvfp4"),
-        FormatSpec("MXINT4", "mxint4", kwargs={"block_size": 32}),
-        FormatSpec("MXFP4",  "mxfp4",  kwargs={"block_size": 32}),
+        # Per-channel, power-of-two scale — cheapest INT decode.
+        FormatSpec("INT4",    "int4_per_channel"),
+        # Per-channel, full-FP scale — matches NF4's scale cost.
+        FormatSpec("INT4_FP", "int4_fp_per_channel"),
+        # Per-channel FP4 (E2M1 levels, POT scale).
+        FormatSpec("FP4",     "fp4_per_channel"),
+        # QLoRA NF4 per-channel.  FP scale (not HW-optimal).
+        FormatSpec("NF4",     "nf4_per_channel"),
+        # HW-realistic NF4 with FP8-E4M3 scale (QLoRA double-quant).
+        FormatSpec("NF4_FP8", "nf4_fp8_per_channel"),
+        # Additive Power-of-Two (Li 2020) per-channel.
+        FormatSpec("APoT4",   "apot4_per_channel"),
+        # Logarithmic 4-bit, shift-only decode.
+        FormatSpec("LOG4",    "log4_per_channel"),
+        # Per-tensor Blackwell NVFP4.
+        FormatSpec("NVFP4",   "nvfp4"),
+        # Block-scaled OCP-MX variants.
+        FormatSpec("MXINT4",  "mxint4", kwargs={"block_size": 32}),
+        FormatSpec("MXFP4",   "mxfp4",  kwargs={"block_size": 32}),
     ],
     transforms=[
         TransformSpec("base",   "identity"),

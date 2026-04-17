@@ -14,6 +14,20 @@ quantization format.  It provides three operations:
 
   * ``fit(X, W)`` – delegated to the transform; called once per
     Pipeline use when paired calibration data exists.
+
+W4A4 output semantics
+---------------------
+``simulate_linear`` implements W4A4 *at the matmul level*: X and W are both
+quantised to 4 bits, they are multiplied, and the accumulator output is
+returned at full precision (FP32).  This mirrors real W4A4 tensor cores –
+the accumulator (INT32 or FP32) is *never* a 4-bit value, because 4-bit
+products routinely overflow into 11+ bits after the in-features reduction.
+A typical stack then applies a LayerNorm / activation in higher precision
+before the **next** layer's input is quantised afresh at that layer's
+entry.  The per-layer Y QSNR we report therefore measures the error that
+W4A4 introduces **at the current layer only**; end-to-end accuracy effects
+come from running the whole model under the same quantiser, which is what
+``fourbit.accuracy.quantized_inference`` does.
 """
 from __future__ import annotations
 

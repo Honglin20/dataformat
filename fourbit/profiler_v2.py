@@ -54,7 +54,7 @@ import pandas as pd
 from fourbit.config import FourBitConfig
 from fourbit.registry import build_formats, make_fresh_transform
 from fourbit.pipeline import Pipeline, fp32_linear
-from fourbit.metrics import qsnr_db, tensor_summary
+from fourbit.metrics import qsnr_db, tensor_summary, fp16_qsnr_db
 
 logger = logging.getLogger("fourbit.profiler")
 
@@ -176,6 +176,13 @@ def analyse_layer(
     stats_X = tensor_summary(X)
     stats_Y = tensor_summary(Y_ref)
 
+    # FP16 baseline QSNRs (per-tensor, format-independent) — these appear as
+    # constant columns across every format row of a given layer, so the
+    # reporter can render them alongside the 4-bit QSNRs without a join.
+    fp16_qsnr_w = fp16_qsnr_db(W)
+    fp16_qsnr_x = fp16_qsnr_db(X)
+    fp16_qsnr_y = fp16_qsnr_db(Y_ref)
+
     formats = build_formats(config)
     rows: list[dict] = []
 
@@ -191,13 +198,16 @@ def analyse_layer(
                 # Record an explicit NaN row so the reporter can see the gap
                 # rather than silently dropping the combination.
                 rows.append({
-                    "layer":     layer_name,
-                    "format":    fmt_spec.display_name,
-                    "transform": t_name,
-                    "qsnr_w_db": float("nan"),
-                    "qsnr_x_db": float("nan"),
-                    "qsnr_y_db": float("nan"),
-                    "reason":    "HAD requires power-of-2 in_features",
+                    "layer":        layer_name,
+                    "format":       fmt_spec.display_name,
+                    "transform":    t_name,
+                    "qsnr_w_db":    float("nan"),
+                    "qsnr_x_db":    float("nan"),
+                    "qsnr_y_db":    float("nan"),
+                    "fp16_qsnr_w_db": fp16_qsnr_w,
+                    "fp16_qsnr_x_db": fp16_qsnr_x,
+                    "fp16_qsnr_y_db": fp16_qsnr_y,
+                    "reason":       "HAD requires power-of-2 in_features",
                     **_prefix(stats_W, "W_"),
                     **_prefix(stats_X, "X_"),
                     **_prefix(stats_Y, "Y_"),
@@ -217,13 +227,16 @@ def analyse_layer(
                     layer_name, fmt_spec.display_name, t_name, exc,
                 )
                 rows.append({
-                    "layer":     layer_name,
-                    "format":    fmt_spec.display_name,
-                    "transform": t_name,
-                    "qsnr_w_db": float("nan"),
-                    "qsnr_x_db": float("nan"),
-                    "qsnr_y_db": float("nan"),
-                    "reason":    str(exc),
+                    "layer":        layer_name,
+                    "format":       fmt_spec.display_name,
+                    "transform":    t_name,
+                    "qsnr_w_db":    float("nan"),
+                    "qsnr_x_db":    float("nan"),
+                    "qsnr_y_db":    float("nan"),
+                    "fp16_qsnr_w_db": fp16_qsnr_w,
+                    "fp16_qsnr_x_db": fp16_qsnr_x,
+                    "fp16_qsnr_y_db": fp16_qsnr_y,
+                    "reason":       str(exc),
                     **_prefix(stats_W, "W_"),
                     **_prefix(stats_X, "X_"),
                     **_prefix(stats_Y, "Y_"),
@@ -234,13 +247,16 @@ def analyse_layer(
             # with the simulation output.  simulate_linear already adds the
             # bias, and Y_ref was recorded post-bias too.
             rows.append({
-                "layer":     layer_name,
-                "format":    fmt_spec.display_name,
-                "transform": t_name,
-                "qsnr_w_db": _safe_qsnr(W, W_q),
-                "qsnr_x_db": _safe_qsnr(X, X_q),
-                "qsnr_y_db": _safe_qsnr(Y_ref, Y_q),
-                "reason":    "",
+                "layer":        layer_name,
+                "format":       fmt_spec.display_name,
+                "transform":    t_name,
+                "qsnr_w_db":    _safe_qsnr(W, W_q),
+                "qsnr_x_db":    _safe_qsnr(X, X_q),
+                "qsnr_y_db":    _safe_qsnr(Y_ref, Y_q),
+                "fp16_qsnr_w_db": fp16_qsnr_w,
+                "fp16_qsnr_x_db": fp16_qsnr_x,
+                "fp16_qsnr_y_db": fp16_qsnr_y,
+                "reason":       "",
                 **_prefix(stats_W, "W_"),
                 **_prefix(stats_X, "X_"),
                 **_prefix(stats_Y, "Y_"),

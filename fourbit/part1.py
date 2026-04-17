@@ -36,7 +36,7 @@ from fourbit.registry import (
 from fourbit.distributions import (
     COMMON_DISTRIBUTIONS, LINEAR_WEIGHT_ACTIVATION, SMOOTH_FRIENDLY,
 )
-from fourbit.metrics import qsnr_db, crest_factor, tensor_summary
+from fourbit.metrics import qsnr_db, crest_factor, tensor_summary, fp16_qsnr_db
 from fourbit.pipeline import fp32_linear, Pipeline
 
 
@@ -77,6 +77,7 @@ def exp11_direct_quant(config: FourBitConfig) -> pd.DataFrame:
     for dist in COMMON_DISTRIBUTIONS:
         x, dist_meta = dist.generate(n, rng_seed)
         stats = tensor_summary(x)
+        fp16_qsnr = fp16_qsnr_db(x)
 
         for fmt_name, fmt in formats.items():
             x_q = fmt.quantize(x)
@@ -84,6 +85,7 @@ def exp11_direct_quant(config: FourBitConfig) -> pd.DataFrame:
                 "distribution": dist.name,
                 "format":       fmt_name,
                 "qsnr_db":      qsnr_db(x, x_q),
+                "fp16_qsnr_db": fp16_qsnr,
                 "crest":        stats["crest"],
                 "kurtosis":     stats["kurtosis"],
                 "abs_max":      stats["max_abs"],
@@ -123,6 +125,9 @@ def exp12_linear_wa(config: FourBitConfig) -> pd.DataFrame:
         x_stats = tensor_summary(X)
         w_stats = tensor_summary(W)
         y_stats = tensor_summary(Y_ref)
+        fp16_qsnr_x = fp16_qsnr_db(X)
+        fp16_qsnr_w = fp16_qsnr_db(W)
+        fp16_qsnr_y = fp16_qsnr_db(Y_ref)
 
         for fmt_name, pipe in pipelines_by_fmt.items():
             pipe.fit(X, W)   # no-op for Identity, but future-proof
@@ -133,6 +138,9 @@ def exp12_linear_wa(config: FourBitConfig) -> pd.DataFrame:
                 "qsnr_y_db":     qsnr_db(Y_ref, Y_q),
                 "qsnr_w_db":     qsnr_db(W, pipe.quantize_tensor(W, role="weight")),
                 "qsnr_x_db":     qsnr_db(X, pipe.quantize_tensor(X, role="activation")),
+                "fp16_qsnr_w_db": fp16_qsnr_w,
+                "fp16_qsnr_x_db": fp16_qsnr_x,
+                "fp16_qsnr_y_db": fp16_qsnr_y,
                 "crest_X":       x_stats["crest"],
                 "crest_W":       w_stats["crest"],
                 "crest_Y":       y_stats["crest"],
@@ -173,6 +181,9 @@ def exp13_smooth_transforms(config: FourBitConfig) -> pd.DataFrame:
         Y_ref = fp32_linear(X, W)
         x_stats = tensor_summary(X)
         w_stats = tensor_summary(W)
+        fp16_qsnr_x = fp16_qsnr_db(X)
+        fp16_qsnr_w = fp16_qsnr_db(W)
+        fp16_qsnr_y = fp16_qsnr_db(Y_ref)
 
         for fmt_spec in config.formats:
             fmt = formats[fmt_spec.display_name]
@@ -192,6 +203,9 @@ def exp13_smooth_transforms(config: FourBitConfig) -> pd.DataFrame:
                     "qsnr_y_db":    qsnr_db(Y_ref, Y_q),
                     "qsnr_w_db":    qsnr_db(W, W_q),
                     "qsnr_x_db":    qsnr_db(X, X_q),
+                    "fp16_qsnr_w_db": fp16_qsnr_w,
+                    "fp16_qsnr_x_db": fp16_qsnr_x,
+                    "fp16_qsnr_y_db": fp16_qsnr_y,
                     "crest_X":      x_stats["crest"],
                     "crest_W":      w_stats["crest"],
                     "tags":         ",".join(lin.tags),
