@@ -37,13 +37,15 @@ class MXINTFormat:
             return np.zeros_like(block)
 
         # OCP MX E8M0 scale: 2^(floor(log2(max_abs)) - (bits-2))
-        # This guarantees q_max * scale ≥ max_abs (no clipping of the block max).
+        # Equivalently: floor(log2(max_abs)) - floor(log2(q_max)), since
+        #   floor(log2(2^(bits-1)-1)) = bits-2  for bits ∈ {4,8}.
         #
-        # Why NOT floor(log2(max_abs / q_max)):
-        #   log2(q_max) = log2(2^(bits-1)-1) ≈ bits-1-ε  (e.g. log2(127)≈6.99)
-        #   floor(log2(max_abs) - 6.99) = floor(log2(max_abs)) - 7  for most max_abs
-        #   but OCP requires  floor(log2(max_abs)) - 6  for bits=8
-        #   → the naive formula gives scale 2× too small → clips ~5% of N(0,1) elements
+        # NOTE: this does NOT guarantee no clipping for INT4.  When max_abs ∈
+        #   (q_max·scale, 2·q_max·scale) = (1.75·2^k, 2^(k+1)) the block max
+        #   exceeds q_max·scale and gets clipped (~12.5% of the per-octave range).
+        #   For INT8 the clip window is only ~1.6% (127/128 ≈ 0.992 coverage).
+        #   Both INT-PerChannel and MXINT use the same formula, so comparisons
+        #   between them are fair despite the systematic underflow.
         log2_max = np.floor(np.log2(max_abs + 1e-38))
         scale = 2.0 ** (log2_max - (self.element_bits - 2))
 
@@ -55,27 +57,32 @@ class MXINTFormat:
         # Dequantize
         return q_int.astype(np.float32) * scale
 
-    def quantize(self, x: np.ndarray, bits: int = None) -> np.ndarray:
-        x = x.astype(np.float32)
-        flat = x.ravel()
+    def _quantize_1d(self, flat: np.ndarray) -> np.ndarray:
+        """Quantize a 1-D float32 array block-by-block."""
         n = len(flat)
-        out = np.zeros_like(flat)
-
+        out = np.zeros(n, dtype=np.float32)
         pad = (-n) % self.block_size
         padded = np.concatenate([flat, np.zeros(pad, dtype=np.float32)])
-
         for i in range(0, len(padded), self.block_size):
             block = padded[i:i + self.block_size]
             out_block = self._quantize_block(block)
-            start = i
             end = min(i + self.block_size, n)
-            out[start:end] = out_block[:end - start]
+            out[i:end] = out_block[:end - i]
+        return out
 
+    def quantize(self, x: np.ndarray, bits: int = None) -> np.ndarray:
+        x = x.astype(np.float32)
+        n = x.size
+        if x.ndim == 2:
+            # Apply block quantization independently per row (output channel).
+            # Flattening across rows would cause cross-channel contamination.
+            out = np.stack([self._quantize_1d(row) for row in x])
+        else:
+            out = self._quantize_1d(x.ravel()).reshape(x.shape)
         n_blocks = int(np.ceil(n / self.block_size))
         self._metadata_bits = n_blocks * 8
         self._n_elements = n
-
-        return out.reshape(x.shape)
+        return out
 
     def dequantize(self, q: np.ndarray) -> np.ndarray:
         return q.astype(np.float32)

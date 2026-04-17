@@ -37,3 +37,20 @@ class BF16Format:
 
     def encoding_overhead(self) -> dict:
         return {"data_bits_per_element": 16, "metadata_bits_per_element": 0}
+
+
+class FP16Format:
+    """IEEE 754 half-precision: 1 sign + 5 exponent + 10 mantissa bits.
+    Simulated by casting to float16 and back to float32.
+    """
+    name = "FP16"
+    bits = 16
+
+    def quantize(self, x: np.ndarray, bits: int = 16) -> np.ndarray:
+        return x.astype(np.float32).astype(np.float16).astype(np.float32)
+
+    def dequantize(self, q: np.ndarray) -> np.ndarray:
+        return q.astype(np.float32)
+
+    def encoding_overhead(self) -> dict:
+        return {"data_bits_per_element": 16, "metadata_bits_per_element": 0}

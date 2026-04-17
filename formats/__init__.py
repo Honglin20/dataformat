@@ -21,13 +21,13 @@ import numpy as np
 from scipy.stats import norm as _norm_dist
 
 # ── Plain formats ──────────────────────────────────────────────────────────────
-from formats.baseline import FP32Format, BF16Format
+from formats.baseline import FP32Format, BF16Format, FP16Format
 from formats.nvfp4 import NVFP4Format
 from formats.mxfp import MXFPFormat
 from formats.mxint import MXINTFormat
 from formats.nf4 import NF4Format
 from formats.fp6 import FP6Format
-from formats.sq_format import SQFormat, SQFormatActivations
+from formats.sq_format import SQFormat, SQFormatActivations, SQFormatFP
 
 # ── Transforms ────────────────────────────────────────────────────────────────
 from formats.transforms.hadamard import HADTransform
@@ -40,18 +40,29 @@ from formats.transforms.smoothquant import SmoothQuantINTQuantizer
 def _pot_scale(absmax: float, q_max: int) -> float:
     """OCP-aligned power-of-two scale: 2^(floor(log2(absmax)) - floor(log2(q_max))).
 
-    This guarantees the maximum element is covered (no clipping) while
-    maintaining as fine a step size as possible.
-
     Hardware: result is always a power of 2 → scale multiply/divide is an
-    arithmetic right-shift, exactly as in E8M0 hardware.
+    arithmetic right-shift, exactly as in E8M0 hardware.  This is the same
+    formula used by MXINT in the OCP MX spec.
+
+    Clipping behaviour (floor formula does NOT guarantee no clipping):
+      For any octave [2^k, 2^{k+1}):
+        scale    = 2^(k - floor(log2(q_max)))
+        max_rep  = q_max × scale
+      Values in (max_rep, 2^{k+1}) are clipped — a fraction of
+        (2^{k+1} - max_rep) / 2^k = 2 - q_max / 2^floor(log2(q_max))
+      per octave:  ~25% for INT4 (q_max=7),  ~1.6% for INT8 (q_max=127).
+
+      This is a deliberate design tradeoff: compared to the ceil alternative
+      (2^ceil(log2(absmax/q_max))), the floor formula uses a finer step size
+      for the 75–98% of non-clipped values, yielding higher overall SQNR on
+      typical weight distributions despite the occasional hard clip.
 
     Why NOT floor(log2(absmax / q_max)):
       log2(q_max) = log2(2^(bits-1)-1) ≈ bits-1-ε  (e.g. log2(127)≈6.99)
       floor(log2(absmax) - 6.99) = floor(log2(absmax)) - 7  for most absmax,
-      giving a scale 2× too small and clipping ~5% of N(0,1) elements in INT8.
-      The OCP formula floor(log2(absmax)) - floor(log2(q_max)) avoids this
-      by treating floor(log2(q_max)) as the exact integer exponent of q_max.
+      giving a scale 2× too small and clipping the entire top half of the
+      representable range.  The OCP formula avoids this by using integer
+      floor(log2(q_max)) = bits-2, not the approximate real-valued log.
     """
     if absmax <= 0:
         return 1.0
@@ -63,8 +74,9 @@ def _pot_scale(absmax: float, q_max: int) -> float:
 class _POTINTQuantizer:
     """Symmetric per-tensor or per-channel INT quantization with POT scale.
 
-    POT scale = 2^ceil(log2(absmax / q_max))  — smallest power of 2 that covers absmax.
+    POT scale = 2^(floor(log2(absmax)) - floor(log2(q_max)))  (OCP floor formula).
     Division by scale is an arithmetic right-shift in hardware — no FP divider.
+    See _pot_scale() for the clipping behaviour of this formula.
     """
 
     def __init__(self, bits: int, per_channel: bool = False):
@@ -93,6 +105,40 @@ class _POTINTQuantizer:
         q = np.clip(q, -self._q_max, self._q_max)
         return q.astype(np.float32) * scale
 
+    def quantize_with_metadata(self, x: np.ndarray) -> dict:
+        """Like quantize() but also returns saturation_mask, scale statistics, and transformed tensor."""
+        x = x.astype(np.float32)
+        if self.per_channel and x.ndim > 1:
+            absmax = np.max(np.abs(x), axis=-1, keepdims=True)
+        else:
+            absmax = np.max(np.abs(x))
+
+        if np.ndim(absmax) == 0:
+            scale = _pot_scale(float(absmax), self._q_max)
+            scale_arr = np.full(x.shape, scale, dtype=np.float32)
+        else:
+            absmax_flat = absmax.ravel()
+            scales_flat = np.array(
+                [_pot_scale(float(v), self._q_max) for v in absmax_flat], dtype=np.float32
+            )
+            scale = scales_flat.reshape(absmax.shape)
+            scale_arr = np.broadcast_to(scale, x.shape).copy()
+
+        scale_safe = np.maximum(scale, 1e-38)
+        q_raw = np.round(x / scale_safe)
+        saturated = np.abs(q_raw) > self._q_max          # elements that will be clipped
+        q_clipped = np.clip(q_raw, -self._q_max, self._q_max).astype(np.int32)
+        x_q = q_clipped.astype(np.float32) * scale_safe
+
+        return {
+            "quantized":       x_q,
+            "saturation_mask": saturated,
+            "saturation_rate": float(np.mean(saturated)),
+            "scale_mean":      float(np.mean(scale_arr)),
+            "scale_std":       float(np.std(scale_arr)),
+            "transformed":     None,   # no pre-transform for plain INT
+        }
+
     def dequantize(self, q: np.ndarray) -> np.ndarray:
         return q.astype(np.float32)
 
@@ -105,7 +151,17 @@ class _POTINTQuantizer:
 
 
 class _LUTQuantizer:
-    """Non-uniform LUT quantization: levels at uniform quantiles of N(0,1)."""
+    """Non-uniform LUT quantization: levels at uniform quantiles of N(0,1).
+
+    Levels are placed at the mid-points of equal-probability bins of N(0,1),
+    spanning approximately [-1.86, +1.86] for 4-bit (16 levels).
+
+    Normalisation: input is divided by its standard deviation so that the
+    normalised tensor is approximately N(0,1), matching the level design.
+    Dividing by absmax instead would constrain x_norm to [-1, 1], making all
+    levels with |level| > 1 permanently unreachable (dead zones): 4/16 = 25%
+    for 4-bit, 80/256 = 31% for 8-bit.
+    """
 
     def __init__(self, bits: int):
         self.bits = bits
@@ -115,13 +171,14 @@ class _LUTQuantizer:
 
     def quantize(self, x: np.ndarray, bits: int = None) -> np.ndarray:
         x = x.astype(np.float32)
-        absmax = np.max(np.abs(x))
-        if absmax == 0:
+        std = float(np.std(x))
+        if std == 0:
             return np.zeros_like(x)
-        x_norm = x / absmax
+        # Normalise to unit variance so the N(0,1) LUT levels are fully used.
+        x_norm = x / std
         dists = np.abs(x_norm[..., None] - self._levels)
         idx = np.argmin(dists, axis=-1)
-        return self._levels[idx] * absmax
+        return self._levels[idx] * std
 
     def dequantize(self, q: np.ndarray) -> np.ndarray:
         return q.astype(np.float32)
@@ -148,6 +205,29 @@ class ComposedFormat:
         q_t = self._quantizer.quantize(x_t)
         return self._transform.inverse(q_t)
 
+    def quantize_with_metadata(self, x: np.ndarray) -> dict:
+        """Transform → quantize_with_metadata → inverse transform.
+
+        The 'transformed' key in the returned dict holds the post-transform tensor
+        (e.g. HAD-domain values) so callers can record transform-domain statistics.
+        """
+        x_t = self._transform.forward(x)
+        if hasattr(self._quantizer, "quantize_with_metadata"):
+            meta = self._quantizer.quantize_with_metadata(x_t)
+            x_q = self._transform.inverse(meta["quantized"])
+            return {**meta, "quantized": x_q, "transformed": x_t}
+        # Fallback for quantizers without the method
+        x_q_t = self._quantizer.quantize(x_t)
+        x_q = self._transform.inverse(x_q_t)
+        return {
+            "quantized":       x_q,
+            "saturation_mask": None,
+            "saturation_rate": float("nan"),
+            "scale_mean":      float("nan"),
+            "scale_std":       float("nan"),
+            "transformed":     x_t,
+        }
+
     def dequantize(self, q: np.ndarray) -> np.ndarray:
         return q.astype(np.float32)
 
@@ -173,10 +253,15 @@ def build_all_formats(dim: int = 256, seed: int = 42) -> dict:
         # ── High-precision baselines ──────────────────────────────────────────
         "FP32":  FP32Format(),
         "BF16":  BF16Format(),
+        "FP16":  FP16Format(),
 
         # ── Plain INT (POT scale, hardware-friendly) ──────────────────────────
-        "INT4":  _POTINTQuantizer(4, per_channel=False),
-        "INT8":  _POTINTQuantizer(8, per_channel=False),
+        "INT4":    _POTINTQuantizer(4, per_channel=False),
+        "INT8":    _POTINTQuantizer(8, per_channel=False),
+        "INT4(T)": _POTINTQuantizer(4, per_channel=False),
+        "INT4(C)": _POTINTQuantizer(4, per_channel=True),
+        "INT8(T)": _POTINTQuantizer(8, per_channel=False),
+        "INT8(C)": _POTINTQuantizer(8, per_channel=True),
 
         # ── Hardware-native formats ───────────────────────────────────────────
         "MXINT4":  MXINTFormat(element_bits=4),
@@ -186,6 +271,12 @@ def build_all_formats(dim: int = 256, seed: int = 42) -> dict:
         "NVFP4":   NVFP4Format(),
         "NF4":     NF4Format(),
         "FP6":     FP6Format(),                   # secondary reference
+
+        # ── SQ-Format-INT / SQ-Format-FP (exp1 canonical configs) ───────────
+        # Fixed configuration: high_bits=8, low_bits=4, bank_size=128, sparsity=0.5
+        # Appears in both 4-bit and 8-bit exp1 sections (unchanged per user spec).
+        "SQ-Format-INT": SQFormat(bank_size=128, sparsity=0.5, high_bits=8, low_bits=4),
+        "SQ-Format-FP":  SQFormatFP(bank_size=128, sparsity=0.5, low_bits=4),
 
         # ── SQ-Format (sparse-quantized, POT scales) ──────────────────────────
         # Algorithm 1 (weight quantization), bank-based, element-level importance.
