@@ -861,6 +861,14 @@ Read:
 
 **Expected outcome:** `fourbit/profiler_v2.py` is study-specific (different data shape, feeds `fourbit/reporter.py`). No merge. PR 4 becomes a no-op PR that records the finding.
 
+### Task 4.2 — Findings (2026-04-18)
+
+Reachability analysis confirmed the expected outcome. `fourbit/profiler_v2.py` is imported only by `fourbit/accuracy.py` and `fourbit/part2.py`; no consumer outside `fourbit/`. Its public API (`LayerRecord`, `LayerCollector`, `analyse_layer`, `analyse_all`) operates on pre-captured NumPy tensors and produces a per-(layer × format) record schema tailored to `fourbit/reporter.py`'s CSV/HTML output.
+
+`profiler/profiler.py::ModelProfiler` is a PyTorch-native runtime profiler using forward hooks on `nn.Module`, built on `profiler/stats.py::WelfordStats` / `RunningHistogram` / `QuantStats` for streaming-memory efficiency. Different data shape (streaming tensor stats vs. format-comparison records), different consumption model (live hooks vs. offline analysis), different output (stats dict vs. DataFrame). No algorithmic overlap.
+
+**Decision:** No consolidation. `fourbit/profiler_v2.py` relocates as-is in PR 5.
+
 ### Task 4.3: If no-op, skip this PR
 
 If analysis shows no consolidation opportunity, do NOT create an empty PR. Instead, add a one-paragraph note to `docs/plans/2026-04-17-refactoring.md` (this file) under PR 4 stating:
