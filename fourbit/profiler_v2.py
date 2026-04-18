@@ -54,7 +54,7 @@ import pandas as pd
 from fourbit.config import FourBitConfig
 from fourbit.registry import build_formats, make_fresh_transform
 from fourbit.pipeline import Pipeline, fp32_linear
-from fourbit.metrics import qsnr_db, tensor_summary, fp16_qsnr_db
+from distributions.metrics import qsnr_db, tensor_summary, fp16_qsnr_db
 
 logger = logging.getLogger("fourbit.profiler")
 
