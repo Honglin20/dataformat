@@ -69,7 +69,7 @@ DEFAULT_CONFIG = FourBitConfig(
 ```
 
 Transforms work the same way — add an entry to `TRANSFORM_FACTORIES` in
-`fourbit/transforms.py` and a `TransformSpec` in the config.
+`experiments/fourbit/transforms.py` and a `TransformSpec` in the config.
 
 ---
 
@@ -79,28 +79,47 @@ Transforms work the same way — add an entry to `TRANSFORM_FACTORIES` in
 dataformat/
 ├── config.py                        # Global constants (block size, bit-widths, energy)
 ├── run_all.py                       # Master pipeline (all phases)
-├── generate_qsnr_table.py           # Reads results/exp1/ CSVs → results/qsnr_summary.html
+├── run_4bit_study.py                # Shim → experiments.fourbit.cli.main
+├── generate_qsnr_table.py           # Shim → utils.qsnr_table.main
 │
-├── formats/                         # Format implementations
-│   ├── __init__.py                  # Format registry (build_all_formats)
+├── formats/                         # Canonical format primitives
+│   ├── __init__.py                  # Format registry (build_all_formats), _pot_scale alias
+│   ├── _pot.py                      # Canonical POT scale helpers (floor + ceil variants)
 │   ├── baseline.py                  # FP32 / BF16 / FP16
 │   ├── mxint.py                     # MXINT4 / MXINT8
 │   ├── mxfp.py                      # MXFP4 / MXFP8
 │   ├── sq_format.py                 # SQ-Format (sparse-quantized)
+│   ├── int_variants.py              # INT4-FP / APoT4 / LOG4 / NF4-FP8 (was in fourbit)
 │   └── transforms/
 │       ├── hadamard.py              # HAD transform (normalize=False)
 │       └── smoothquant.py           # SmoothQuant baseline
 │
 ├── distributions/
 │   ├── generators.py                # Gaussian, Laplace, bimodal, outlier, …
-│   └── metrics.py                   # SQNR, MSE, KL-div, MaxAE
+│   ├── linear_pairs.py              # Paired (weight, activation) generators
+│   └── metrics.py                   # SQNR, MSE, QSNR, FP16 baseline, crest, tensor_summary
+│
+├── profiler/                        # PyTorch runtime profiler (streaming hooks)
+│   ├── profiler.py                  # ModelProfiler (forward-hook based)
+│   └── stats.py                     # WelfordStats / RunningHistogram / QuantStats
+│
+├── utils/
+│   └── qsnr_table.py                # HTML QSNR table from results/exp1/*.csv
 │
 ├── experiments/
 │   ├── defaults.py                  # ← Edit here to add formats / distributions
 │   ├── config.py                    # ExperimentConfig / FormatGroup dataclasses
 │   ├── robustness.py                # Phase 2: distribution robustness sweep
 │   ├── bitwidth_ablation.py         # Phase 3: 4-bit vs 8-bit ablation
-│   └── exp1_common_distributions.py # Standalone Exp 1 (9 formats × 24 distributions)
+│   ├── exp1_common_distributions.py # Standalone Exp 1 (9 formats × 24 distributions)
+│   ├── exp2_crest_factor.py         # Standalone Exp 2 (SQNR vs crest factor)
+│   └── fourbit/                     # 4-bit data format study (Part 1 + Part 2)
+│       ├── cli.py                   # Entry point (called by run_4bit_study.py shim)
+│       ├── config.py / registry.py / pipeline.py
+│       ├── part1.py / part2.py / accuracy.py
+│       ├── reporter.py / profiler_v2.py
+│       ├── formats.py / transforms.py
+│       └── distribution_sets.py     # Curated DistSpec / LinearSpec lists
 │
 ├── examples/
 │   ├── train_mnist.py               # Train MNISTTransformer
@@ -108,6 +127,12 @@ dataformat/
 │   └── generate_report.py           # Build HTML report from profiler output
 │
 ├── visualization/                   # Figure generators (called by run_all.py Phase 5)
+│
+├── tests/
+│   ├── test_regression.py           # Golden CLI regression harness (exp1/exp2/fourbit)
+│   ├── test_pot_scale_equivalence.py
+│   ├── fixtures/golden/             # Committed reference CSVs for regression
+│   └── …                            # unit tests for each format/distribution
 │
 └── results/                         # All output (git-ignored large files)
     ├── robustness.csv
