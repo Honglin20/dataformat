@@ -128,3 +128,48 @@ def evaluate_all(x_orig: np.ndarray, x_recon: np.ndarray) -> dict:
         "max_ae":    max_absolute_error(x_orig, x_recon),
         "eff_bits":  effective_bits(x_orig, x_recon),
     }
+
+
+# ── Aliases and FP16 baseline helpers ──────────────────────────────────────────
+
+qsnr_db = snr_db  # alias used by fourbit code paths
+
+def fp16_quantize(x: np.ndarray) -> np.ndarray:
+    """Round-trip ``x`` through float16. FP16 is the upper-bound baseline
+    for 4-bit quantization QSNR comparisons."""
+    return np.asarray(x, dtype=np.float32).astype(np.float16).astype(np.float32)
+
+def fp16_qsnr_db(x: np.ndarray) -> float:
+    """QSNR (dB) of FP16-rounded ``x`` vs FP32 ``x``."""
+    return snr_db(x, fp16_quantize(x))
+
+def crest_factor(x: np.ndarray) -> float:
+    """Peak-to-RMS ratio ``max(|x|) / rms(x)``. Returns 0 for all-zero tensor."""
+    x = np.asarray(x, dtype=np.float64).ravel()
+    if x.size == 0:
+        return 0.0
+    peak = float(np.max(np.abs(x)))
+    rms  = float(np.sqrt(np.mean(x * x)))
+    return peak / rms if rms > 0 else 0.0
+
+def tensor_summary(x: np.ndarray) -> dict:
+    """Compact stat bundle: std, max_abs, crest (peak/std), crest_rms
+    (peak/rms including mean), kurtosis, n."""
+    x = np.asarray(x, dtype=np.float64).ravel()
+    if x.size == 0:
+        return {"std": 0.0, "max_abs": 0.0, "crest": 0.0,
+                "crest_rms": 0.0, "kurtosis": 0.0, "n": 0}
+    std  = float(np.std(x))
+    peak = float(np.max(np.abs(x)))
+    mean = float(np.mean(x))
+    dev  = x - mean
+    var  = float(np.mean(dev * dev))
+    kurt = float(np.mean(dev ** 4) / (var ** 2)) - 3.0 if var > 0 else 0.0
+    return {
+        "std":       std,
+        "max_abs":   peak,
+        "crest":     peak / std if std > 0 else 0.0,
+        "crest_rms": crest_factor(x),
+        "kurtosis":  kurt,
+        "n":         int(x.size),
+    }

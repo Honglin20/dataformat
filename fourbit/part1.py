@@ -36,7 +36,7 @@ from fourbit.registry import (
 from fourbit.distributions import (
     COMMON_DISTRIBUTIONS, LINEAR_WEIGHT_ACTIVATION, SMOOTH_FRIENDLY,
 )
-from fourbit.metrics import qsnr_db, crest_factor, tensor_summary, fp16_qsnr_db
+from distributions.metrics import qsnr_db, crest_factor, tensor_summary, fp16_qsnr_db
 from fourbit.pipeline import fp32_linear, Pipeline
 
 
