@@ -33,7 +33,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from fourbit.config import FourBitConfig
+from experiments.fourbit.config import FourBitConfig
 
 
 FORMAT_ORDER = [

@@ -25,9 +25,9 @@ import torch
 import torch.utils.data as tdata
 from torchvision import datasets, transforms
 
-from fourbit.config import FourBitConfig
-from fourbit.profiler_v2 import LayerCollector, analyse_all
-from fourbit.accuracy import accuracy_sweep
+from experiments.fourbit.config import FourBitConfig
+from experiments.fourbit.profiler_v2 import LayerCollector, analyse_all
+from experiments.fourbit.accuracy import accuracy_sweep
 
 
 # ── Model loading ────────────────────────────────────────────────────────────
