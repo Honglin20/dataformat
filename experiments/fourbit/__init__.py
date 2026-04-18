@@ -15,6 +15,6 @@ Public entry points:
   fourbit.part1.run                        -> run all Part 1 experiments
   fourbit.part2.run                        -> run Part 2 (model profiling)
 """
-from fourbit.config import FourBitConfig, DEFAULT_CONFIG
-from fourbit.pipeline import Pipeline
-from fourbit.registry import build_formats, build_transforms
+from experiments.fourbit.config import FourBitConfig, DEFAULT_CONFIG
+from experiments.fourbit.pipeline import Pipeline
+from experiments.fourbit.registry import build_formats, build_transforms

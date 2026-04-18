@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from fourbit.config import FourBitConfig
-from fourbit.formats import make_format
-from fourbit.transforms import Transform, make_transform
-from fourbit.pipeline import Pipeline
+from experiments.fourbit.config import FourBitConfig
+from experiments.fourbit.formats import make_format
+from experiments.fourbit.transforms import Transform, make_transform
+from experiments.fourbit.pipeline import Pipeline
 
 
 def build_formats(config: FourBitConfig) -> Dict[str, object]:

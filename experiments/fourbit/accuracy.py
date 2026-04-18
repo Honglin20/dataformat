@@ -29,10 +29,10 @@ import torch
 import torch.nn as nn
 import torch.utils.data as tdata
 
-from fourbit.config import FourBitConfig
-from fourbit.registry import build_formats, make_fresh_transform
-from fourbit.pipeline import Pipeline
-from fourbit.profiler_v2 import LayerRecord
+from experiments.fourbit.config import FourBitConfig
+from experiments.fourbit.registry import build_formats, make_fresh_transform
+from experiments.fourbit.pipeline import Pipeline
+from experiments.fourbit.profiler_v2 import LayerRecord
 
 logger = logging.getLogger("fourbit.accuracy")
 

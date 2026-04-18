@@ -51,9 +51,9 @@ import torch
 import torch.nn as nn
 import pandas as pd
 
-from fourbit.config import FourBitConfig
-from fourbit.registry import build_formats, make_fresh_transform
-from fourbit.pipeline import Pipeline, fp32_linear
+from experiments.fourbit.config import FourBitConfig
+from experiments.fourbit.registry import build_formats, make_fresh_transform
+from experiments.fourbit.pipeline import Pipeline, fp32_linear
 from distributions.metrics import qsnr_db, tensor_summary, fp16_qsnr_db
 
 logger = logging.getLogger("fourbit.profiler")
