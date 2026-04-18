@@ -46,25 +46,12 @@ import numpy as np
 from formats.mxint import MXINTFormat
 from formats.mxfp import MXFPFormat, _E2M1_POS, _fp8_e4m3_quantize_scalar
 from formats.nvfp4 import NVFP4Format
+# Canonical OCP-floor POT helper; aliased to the legacy private name used below.
+from formats._pot import pot_scale_vec as _pot_scale_for_qmax
 from config import NF4_LEVELS
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
-
-def _pot_scale_for_qmax(absmax: np.ndarray, q_max: float) -> np.ndarray:
-    """Power-of-two scale: 2^(floor(log2(absmax)) - floor(log2(q_max))).
-
-    Vectorised and safe for zero / subnormal ``absmax``.  Matches the OCP
-    MX-spec formula used elsewhere in the repo so comparisons are apples-to-
-    apples across formats.
-    """
-    absmax = np.asarray(absmax, dtype=np.float32)
-    log2_q = int(np.floor(np.log2(float(q_max))))
-    safe   = np.maximum(absmax, np.finfo(np.float32).tiny)
-    log2_a = np.floor(np.log2(safe))
-    scale  = 2.0 ** (log2_a - log2_q)
-    # For absmax == 0 use unit scale (result is zero anyway).
-    return np.where(absmax > 0, scale, 1.0).astype(np.float32)
 
 
 def _per_channel_absmax(x: np.ndarray) -> np.ndarray:

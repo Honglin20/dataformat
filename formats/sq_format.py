@@ -64,38 +64,16 @@ tokens in the batch.
 
 import numpy as np
 
+# SQFormat uses the ceil-of-ratio POT scale (no-clipping guarantee); canonical
+# implementation lives in ``formats/_pot.py``.  Aliased to the legacy private
+# names so the rest of this module (and its tests) need no further changes.
+from formats._pot import (
+    pot_scale_ceil as _pot_scale,
+    pot_scale_ceil_vec as _pot_scale_vec,
+)
+
 
 # ── Low-level helpers ──────────────────────────────────────────────────────────
-
-def _pot_scale(absmax: float, q_max: int) -> float:
-    """Smallest power-of-two scale s such that q_max * s >= absmax (no clipping).
-
-    Computes s = 2^ceil(log2(absmax / q_max)).  Using ceil (not the
-    floor-of-each-operand-separately approach) guarantees the no-clipping
-    property.  Counter-example for the floor approach: absmax=15, q_max=7
-    gives floor(log2(15))-floor(log2(7)) = 3-2 = 1 → s=2, but 7×2=14 < 15,
-    so the value clips.  The ceil approach gives ceil(log2(15/7))=ceil(1.1)=2
-    → s=4, and 7×4=28 >= 15.
-
-    Scale is a power of two → division is a hardware arithmetic right-shift.
-    """
-    if absmax <= 0:
-        return 1.0
-    log2_ratio = np.log2(float(absmax) / float(q_max))
-    return float(2.0 ** int(np.ceil(log2_ratio)))
-
-
-def _pot_scale_vec(absmax: np.ndarray, q_max: int) -> np.ndarray:
-    """Vectorized _pot_scale: 2^ceil(log2(absmax / q_max)) per element."""
-    absmax = np.asarray(absmax, dtype=np.float32)
-    result = np.ones_like(absmax)
-    valid  = absmax > 0
-    if not np.any(valid):
-        return result
-    safe_am    = np.where(valid, absmax, float(q_max))   # avoid log2(0)
-    log2_ratio = np.log2(safe_am / float(q_max))
-    result     = np.where(valid, (2.0 ** np.ceil(log2_ratio)).astype(np.float32), 1.0)
-    return result.astype(np.float32)
 
 
 def _int_quantize_pot(x: np.ndarray, bits: int) -> np.ndarray:
