@@ -36,39 +36,36 @@ from formats.transforms.smoothquant import SmoothQuantINTQuantizer
 
 
 # ── Hardware-friendly INT quantizer (POT scale) ───────────────────────────────
-
-def _pot_scale(absmax: float, q_max: int) -> float:
-    """OCP-aligned power-of-two scale: 2^(floor(log2(absmax)) - floor(log2(q_max))).
-
-    Hardware: result is always a power of 2 → scale multiply/divide is an
-    arithmetic right-shift, exactly as in E8M0 hardware.  This is the same
-    formula used by MXINT in the OCP MX spec.
-
-    Clipping behaviour (floor formula does NOT guarantee no clipping):
-      For any octave [2^k, 2^{k+1}):
-        scale    = 2^(k - floor(log2(q_max)))
-        max_rep  = q_max × scale
-      Values in (max_rep, 2^{k+1}) are clipped — a fraction of
-        (2^{k+1} - max_rep) / 2^k = 2 - q_max / 2^floor(log2(q_max))
-      per octave:  ~25% for INT4 (q_max=7),  ~1.6% for INT8 (q_max=127).
-
-      This is a deliberate design tradeoff: compared to the ceil alternative
-      (2^ceil(log2(absmax/q_max))), the floor formula uses a finer step size
-      for the 75–98% of non-clipped values, yielding higher overall SQNR on
-      typical weight distributions despite the occasional hard clip.
-
-    Why NOT floor(log2(absmax / q_max)):
-      log2(q_max) = log2(2^(bits-1)-1) ≈ bits-1-ε  (e.g. log2(127)≈6.99)
-      floor(log2(absmax) - 6.99) = floor(log2(absmax)) - 7  for most absmax,
-      giving a scale 2× too small and clipping the entire top half of the
-      representable range.  The OCP formula avoids this by using integer
-      floor(log2(q_max)) = bits-2, not the approximate real-valued log.
-    """
-    if absmax <= 0:
-        return 1.0
-    log2_absmax = int(np.floor(np.log2(float(absmax) + 1e-38)))
-    log2_qmax   = int(np.floor(np.log2(float(q_max))))
-    return float(2.0 ** (log2_absmax - log2_qmax))
+#
+# OCP-aligned power-of-two scale: 2^(floor(log2(absmax)) - floor(log2(q_max))).
+#
+# Hardware: result is always a power of 2 → scale multiply/divide is an
+# arithmetic right-shift, exactly as in E8M0 hardware.  This is the same
+# formula used by MXINT in the OCP MX spec.
+#
+# Clipping behaviour (floor formula does NOT guarantee no clipping):
+#   For any octave [2^k, 2^{k+1}):
+#     scale    = 2^(k - floor(log2(q_max)))
+#     max_rep  = q_max × scale
+#   Values in (max_rep, 2^{k+1}) are clipped — a fraction of
+#     (2^{k+1} - max_rep) / 2^k = 2 - q_max / 2^floor(log2(q_max))
+#   per octave:  ~25% for INT4 (q_max=7),  ~1.6% for INT8 (q_max=127).
+#
+#   This is a deliberate design tradeoff: compared to the ceil alternative
+#   (2^ceil(log2(absmax/q_max))), the floor formula uses a finer step size
+#   for the 75–98% of non-clipped values, yielding higher overall SQNR on
+#   typical weight distributions despite the occasional hard clip.
+#
+# Why NOT floor(log2(absmax / q_max)):
+#   log2(q_max) = log2(2^(bits-1)-1) ≈ bits-1-ε  (e.g. log2(127)≈6.99)
+#   floor(log2(absmax) - 6.99) = floor(log2(absmax)) - 7  for most absmax,
+#   giving a scale 2× too small and clipping the entire top half of the
+#   representable range.  The OCP formula avoids this by using integer
+#   floor(log2(q_max)) = bits-2, not the approximate real-valued log.
+#
+# Canonical implementation lives in ``formats/_pot.py``.  The alias below
+# preserves the legacy internal name for the rest of this module.
+from formats._pot import pot_scale as _pot_scale   # noqa: E402  (re-exported)
 
 
 class _POTINTQuantizer:
