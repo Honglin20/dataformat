@@ -33,7 +33,7 @@ from fourbit.config import FourBitConfig
 from fourbit.registry import (
     build_formats, build_pipelines, make_fresh_transform,
 )
-from fourbit.distributions import (
+from fourbit.distribution_sets import (
     COMMON_DISTRIBUTIONS, LINEAR_WEIGHT_ACTIVATION, SMOOTH_FRIENDLY,
 )
 from distributions.metrics import qsnr_db, crest_factor, tensor_summary, fp16_qsnr_db
