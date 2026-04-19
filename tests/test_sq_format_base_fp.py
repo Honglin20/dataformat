@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from formats.sq_format import _ELEMENT_ENCODERS
+from formats.sq_format import _ELEMENT_ENCODERS, SQFormat, SQFormatActivations
 
 
 def test_int4_encoder_round_clip():
@@ -28,11 +28,10 @@ def test_fp8_e4m3_encoder_saturates_at_448():
     got = fn(x, scale=1.0)
     assert got[0] == 0.0
     assert got[1] == 448.0
-    assert abs(got[2]) <= 448.0
-    assert abs(got[3]) <= 448.0
-
-
-from formats.sq_format import SQFormat
+    # Out-of-range values must saturate to ±448.0, not land on some
+    # in-range level.
+    assert got[2] == 448.0
+    assert got[3] == -448.0
 
 
 def test_sqformat_base_int_default_unchanged():
@@ -63,7 +62,6 @@ def test_sqformat_rejects_unsupported_cell():
 
 
 def test_sqformat_activations_base_int_default_unchanged():
-    from formats.sq_format import SQFormatActivations
     rng = np.random.default_rng(2)
     W = rng.standard_normal((128, 64)).astype(np.float32)
     A = rng.standard_normal((32, 128)).astype(np.float32)
@@ -74,7 +72,6 @@ def test_sqformat_activations_base_int_default_unchanged():
 
 
 def test_sqformat_activations_base_fp_runs():
-    from formats.sq_format import SQFormatActivations
     rng = np.random.default_rng(3)
     W = rng.standard_normal((128, 64)).astype(np.float32)
     A = rng.standard_normal((32, 128)).astype(np.float32)
