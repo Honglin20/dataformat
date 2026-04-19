@@ -111,6 +111,24 @@ _ELEMENT_ENCODERS = {
 }
 
 
+def _resolve_encoder(base: str, bits: int):
+    """Look up ``(encode_fn, q_max)`` for a given (base, bits) cell.
+
+    ``_ELEMENT_ENCODERS`` is authoritative.  For ``base="int"`` we additionally
+    fall back to the symmetric-integer formula ``q_max = 2**(bits-1) - 1`` so
+    that non-standard widths (e.g. INT6/INT12/INT16 used by ablation tests and
+    encoding-overhead tests) continue to work.  ``base="fp"`` is strict: only
+    cells explicitly registered are accepted.
+    """
+    key = (base, bits)
+    if key in _ELEMENT_ENCODERS:
+        return _ELEMENT_ENCODERS[key]
+    if base == "int" and bits >= 2:
+        q_max = 2 ** (bits - 1) - 1
+        return (lambda x, scale, _qm=q_max: _int_encode(x, scale, _qm), q_max)
+    raise ValueError(f"Unsupported SQ-Format cell: base={base!r}, bits={bits}")
+
+
 # ── Low-level helpers ──────────────────────────────────────────────────────────
 
 
@@ -211,6 +229,7 @@ class SQFormat:
         dense_bits: int = None,
         sparse_bits: int = None,
         sparsity_ratio: float = None,
+        base: str = "int",
     ):
         self.low_bits  = low_bits  if low_bits  is not None else (dense_bits  if dense_bits  is not None else 4)
         self.high_bits = high_bits if high_bits is not None else (sparse_bits if sparse_bits is not None else 8)
@@ -231,6 +250,14 @@ class SQFormat:
 
         self.name = "SQ-Format"
         self.bits = self.low_bits
+
+        # ── Element-encoder selection (base ∈ {"int", "fp"}) ────────────────
+        # Banking / mask / sentinel logic below stays identical across bases;
+        # only the per-element encoding swaps.  Default base="int" preserves
+        # byte-identical output for the existing golden CSVs.
+        self.base = base
+        self._enc_high, self._qmax_high = _resolve_encoder(base, self.high_bits)
+        self._enc_low,  self._qmax_low  = _resolve_encoder(base, self.low_bits)
 
         # Sentinel value: the unused two's-complement minimum for hlow-bit symmetric int.
         # Marks high-precision positions in the low-precision integer stream.
@@ -339,9 +366,6 @@ class SQFormat:
         W_blk   = W_work.reshape(n_kb, self.bank_size, N)
         imp_blk = imp_work.reshape(n_kb, self.bank_size, N)
 
-        q_max_h = 2 ** (self.high_bits - 1) - 1
-        q_max_l = 2 ** (self.low_bits  - 1) - 1
-
         k_high      = min(max(1, int(np.round((1.0 - self.sparsity) * self.bank_size))), self.bank_size)
         thresh_rank = self.bank_size - k_high   # elements ranked >= this → high-prec
 
@@ -358,27 +382,23 @@ class SQFormat:
 
             # ── High-precision sub-stream ─────────────────────────────────
             absmax_h = np.where(mask_b, np.abs(W_b), 0.0).max(axis=0)   # (N,)
-            scale_h  = _pot_scale_vec(absmax_h, q_max_h)                  # (N,)
-            q_h = np.where(
+            scale_h  = _pot_scale_vec(absmax_h, self._qmax_high)         # (N,)
+            dq_h = np.where(
                 mask_b,
-                np.round(W_b / np.maximum(scale_h[np.newaxis, :], 1e-38)),
+                self._enc_high(W_b, scale_h[np.newaxis, :]),
                 0.0,
-            ).astype(np.int32)
-            q_h = np.clip(q_h, -q_max_h, q_max_h)
-            dq_h = np.where(mask_b, q_h.astype(np.float32) * scale_h[np.newaxis, :], 0.0)
+            )
 
             # ── Low-precision sub-stream ──────────────────────────────────
             # In hardware the integer stream stores v_sentinel at high-prec positions;
             # in simulation we simply zero-out those positions before dequantizing.
             absmax_l = np.where(~mask_b, np.abs(W_b), 0.0).max(axis=0)  # (N,)
-            scale_l  = _pot_scale_vec(absmax_l, q_max_l)                  # (N,)
-            q_l = np.where(
+            scale_l  = _pot_scale_vec(absmax_l, self._qmax_low)          # (N,)
+            dq_l = np.where(
                 ~mask_b,
-                np.round(W_b / np.maximum(scale_l[np.newaxis, :], 1e-38)),
+                self._enc_low(W_b, scale_l[np.newaxis, :]),
                 0.0,
-            ).astype(np.int32)
-            q_l = np.clip(q_l, -q_max_l, q_max_l)
-            dq_l = np.where(~mask_b, q_l.astype(np.float32) * scale_l[np.newaxis, :], 0.0)
+            )
 
             result_blk[kb] = dq_h + dq_l   # non-overlapping by construction
 
@@ -390,6 +410,18 @@ class SQFormat:
             })
 
         return result_blk.reshape(K_pad, N)[:K]
+
+    @staticmethod
+    def _encode_subset(vals: np.ndarray, enc, qmax) -> tuple:
+        """Quantize a flat subset via (enc, qmax) with per-group POT scale.
+
+        Returns (dequantized, scale) where scale == 1.0 for empty/zero input.
+        """
+        absmax = float(np.max(np.abs(vals))) if vals.size else 0.0
+        if absmax == 0:
+            return np.zeros_like(vals, dtype=np.float32), 1.0
+        scale = _pot_scale(absmax, qmax)
+        return enc(vals, scale), scale
 
     def _quantize_1d(self, W: np.ndarray, importance: np.ndarray) -> np.ndarray:
         """1D path: contiguous element banks of bank_size elements."""
@@ -409,9 +441,9 @@ class SQFormat:
 
             s_h, s_l = 1.0, 1.0
             if np.any(mask):
-                bank_result[mask],  s_h = _int_quantize_pot_with_scale(bank_W[mask],  self.high_bits)
+                bank_result[mask],  s_h = self._encode_subset(bank_W[mask],  self._enc_high, self._qmax_high)
             if np.any(~mask):
-                bank_result[~mask], s_l = _int_quantize_pot_with_scale(bank_W[~mask], self.low_bits)
+                bank_result[~mask], s_l = self._encode_subset(bank_W[~mask], self._enc_low,  self._qmax_low)
 
             self._last_bank_scales.append({
                 "scale_high": s_h,

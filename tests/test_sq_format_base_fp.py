@@ -30,3 +30,33 @@ def test_fp8_e4m3_encoder_saturates_at_448():
     assert got[1] == 448.0
     assert abs(got[2]) <= 448.0
     assert abs(got[3]) <= 448.0
+
+
+from formats.sq_format import SQFormat
+
+
+def test_sqformat_base_int_default_unchanged():
+    # Regression pin: default SQFormat() behaviour is identical to
+    # SQFormat(base="int") — existing golden CSVs depend on this.
+    rng = np.random.default_rng(0)
+    W = rng.standard_normal((128, 64)).astype(np.float32)
+    a = SQFormat()
+    b = SQFormat(base="int")
+    np.testing.assert_array_equal(a.quantize(W), b.quantize(W))
+
+
+def test_sqformat_base_fp_produces_fp_levels():
+    rng = np.random.default_rng(1)
+    W = rng.standard_normal((128, 64)).astype(np.float32)
+    fmt = SQFormat(base="fp", high_bits=8, low_bits=4, sparsity=0.5)
+    W_q = fmt.quantize(W)
+    assert W_q.shape == W.shape
+    # FP output must not be on an integer grid — this distinguishes it
+    # from base="int" at a coarse scale.
+    a_int = SQFormat(base="int", high_bits=8, low_bits=4, sparsity=0.5).quantize(W)
+    assert not np.array_equal(a_int, W_q)
+
+
+def test_sqformat_rejects_unsupported_cell():
+    with pytest.raises(ValueError, match="Unsupported SQ-Format cell"):
+        SQFormat(base="fp", high_bits=2, low_bits=2)  # no FP2 in registry
