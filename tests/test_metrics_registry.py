@@ -36,3 +36,14 @@ def test_register_metric_pair_kind():
 def test_register_metric_rejects_unknown_kind():
     with pytest.raises(ValueError):
         register_metric("nope", lambda *_: 0.0, kind="bogus")
+
+
+def test_fourbit_config_default_metrics_match_current_columns():
+    from experiments.fourbit.config import DEFAULT_CONFIG
+
+    names = {(m.name, tuple(m.roles)) for m in DEFAULT_CONFIG.metrics}
+    # Exact set must equal the four columns that profiler_v2 currently emits
+    assert names == {
+        ("qsnr_db",      ("W", "X", "Y")),
+        ("fp16_qsnr_db", ("W", "X", "Y")),
+    }

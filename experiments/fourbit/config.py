@@ -32,6 +32,21 @@ class TransformSpec:
 
 
 @dataclass
+class MetricSpec:
+    """Declarative metric entry consumed by the Part-1 and profiler CSVs.
+
+    ``func`` is the key into :data:`distributions.metrics.METRIC_REGISTRY`;
+    ``name`` is the column prefix emitted in the CSV. ``roles`` selects
+    which tensors (``"W"``, ``"X"``, ``"Y"``) the metric is applied to —
+    one column per role is produced, suffixed ``_w``/``_x``/``_y``.
+    """
+    name: str
+    func: str
+    roles: List[str] = field(default_factory=lambda: ["W", "X", "Y"])
+    kind: str = "pair"
+
+
+@dataclass
 class FourBitConfig:
     """Top-level experiment config.
 
@@ -43,6 +58,18 @@ class FourBitConfig:
     """
     formats: List[FormatSpec] = field(default_factory=list)
     transforms: List[TransformSpec] = field(default_factory=list)
+
+    # Metric columns emitted by Part-1 / profiler CSVs.  The default mirrors
+    # the legacy hard-coded schema (``qsnr_*_db`` + ``fp16_qsnr_*_db`` across
+    # W/X/Y) and exists so experiments can plug in custom metrics without
+    # modifying the writers.
+    metrics: List["MetricSpec"] = field(default_factory=lambda: [
+        MetricSpec("qsnr_db",      "qsnr_db"),
+        MetricSpec("fp16_qsnr_db", "fp16_qsnr_db"),
+    ])
+    tensor_stats: List[str] = field(default_factory=lambda: [
+        "mean", "std", "min", "max", "crest", "kurtosis",
+    ])
 
     # Sweep parameters
     n_samples: int = 4096          # Part 1.1 tensor size
