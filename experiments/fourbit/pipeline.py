@@ -31,6 +31,7 @@ come from running the whole model under the same quantiser, which is what
 """
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 import numpy as np
 
@@ -49,6 +50,13 @@ def _apply_output_fmt(out_fmt: object, y: np.ndarray) -> np.ndarray:
     back afterwards so the SQ banking aligns with output channels
     rather than tokens.
 
+    R2 auto-adapt: if ``out_features < out_fmt.bank_size``, we use a
+    shallow-copied SQ-Format whose ``bank_size`` is shrunk to
+    ``out_features``.  Without this, a format built with the default
+    ``bank_size=128`` applied to a small head (e.g. MNIST classifier
+    out_features=10) would silently pad the whole row into a single
+    bank and effectively disable the sparsity split.
+
     Imports are done lazily to avoid circular-import with
     ``formats/sq_format.py``.
     """
@@ -56,7 +64,13 @@ def _apply_output_fmt(out_fmt: object, y: np.ndarray) -> np.ndarray:
 
     if isinstance(out_fmt, (SQFormat, SQFormatActivations, SQFormatFP)):
         y_t = np.ascontiguousarray(y.T)
-        y_tq = out_fmt.quantize(y_t)
+        out_features = y_t.shape[0]
+        if out_features < out_fmt.bank_size:
+            fmt = copy.copy(out_fmt)
+            fmt.bank_size = out_features
+        else:
+            fmt = out_fmt
+        y_tq = fmt.quantize(y_t)
         return np.ascontiguousarray(y_tq.T)
     return out_fmt.quantize(y)
 
