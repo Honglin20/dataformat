@@ -521,6 +521,7 @@ class SQFormatActivations:
         high_bits: int = 8,
         low_bits: int = 4,
         alpha: float = 0.5,
+        base: str = "int",
     ):
         self.bank_size = bank_size
         self.sparsity  = sparsity
@@ -532,6 +533,14 @@ class SQFormatActivations:
         self.dense_bits    = low_bits
         self.sparse_bits   = high_bits
         self.sparsity_ratio = 1.0 - sparsity
+
+        # Element-encoder selection — mirrors SQFormat (Algorithm 1).
+        # Banking / mask / reorder logic is unchanged; only per-row weight
+        # encoding and the per-element runtime-activation encoding swap.
+        # Default base="int" preserves byte-identical output.
+        self.base = base
+        self._enc_high, self._qmax_high = _resolve_encoder(base, high_bits)
+        self._enc_low,  self._qmax_low  = _resolve_encoder(base, low_bits)
 
     def _bank_mask(self, importance: np.ndarray, bsz: int) -> np.ndarray:
         k_high = min(max(1, int(np.round((1.0 - self.sparsity) * bsz))), bsz)
@@ -587,18 +596,19 @@ class SQFormatActivations:
         scales  = np.zeros(K, dtype=np.float32)
 
         for j in range(K):
-            bits_j = self.high_bits if mask[j] else self.low_bits
-            q_max  = 2 ** (bits_j - 1) - 1
+            if mask[j]:
+                enc, q_max = self._enc_high, self._qmax_high
+            else:
+                enc, q_max = self._enc_low,  self._qmax_low
             row    = W_smooth[j]
             absmax = float(np.max(np.abs(row)))
             if absmax == 0:
                 W_quant[j] = 0.0
                 scales[j]  = 1.0
             else:
-                s        = _pot_scale(absmax, q_max)
-                scales[j] = s
-                q        = np.clip(np.round(row / s).astype(np.int32), -q_max, q_max)
-                W_quant[j] = q.astype(np.float32) * s
+                s          = _pot_scale(absmax, q_max)
+                scales[j]  = s
+                W_quant[j] = enc(row, s)
 
         # Step 5: Reorder rows — high-prec channels first within each bank
         reorder_idx = np.arange(K)
@@ -659,30 +669,33 @@ class SQFormatActivations:
         X_high = np.zeros_like(X_reordered)
         X_low  = np.zeros_like(X_reordered)
 
-        q_max_h = 2 ** (self.high_bits - 1) - 1
-        q_max_l = 2 ** (self.low_bits  - 1) - 1
-
         # Step 3: Per-token (per-row) quantization
         # scale[b] = f(X_reordered[b, <high or low cols>]) only — batch-independent
         if len(high_cols) > 0:
             X_h      = X_reordered[:, high_cols]                              # (B, n_high)
             absmax_h = np.max(np.abs(X_h), axis=1, keepdims=True)             # (B, 1)
-            scale_h  = _pot_scale_vec(absmax_h.ravel(), q_max_h).reshape(-1, 1)  # (B, 1)
+            scale_h  = _pot_scale_vec(absmax_h.ravel(), self._qmax_high).reshape(-1, 1)  # (B, 1)
             scale_h  = np.maximum(scale_h, 1e-38)
-            q_h = np.clip(np.round(X_h / scale_h).astype(np.int32), -q_max_h, q_max_h)
-            X_high[:, high_cols] = q_h.astype(np.float32) * scale_h
+            X_high[:, high_cols] = self._enc_high(X_h, scale_h)
 
         if len(low_cols) > 0:
             X_l      = X_reordered[:, low_cols]                               # (B, n_low)
             absmax_l = np.max(np.abs(X_l), axis=1, keepdims=True)             # (B, 1)
-            scale_l  = _pot_scale_vec(absmax_l.ravel(), q_max_l).reshape(-1, 1)  # (B, 1)
+            scale_l  = _pot_scale_vec(absmax_l.ravel(), self._qmax_low).reshape(-1, 1)  # (B, 1)
             scale_l  = np.maximum(scale_l, 1e-38)
-            q_l = np.clip(np.round(X_l / scale_l).astype(np.int32), -q_max_l, q_max_l)
-            X_low[:, low_cols] = q_l.astype(np.float32) * scale_l
+            X_low[:, low_cols] = self._enc_low(X_l, scale_l)
 
         if squeeze:
             return X_high[0], X_low[0], X_reordered[0]
         return X_high, X_low, X_reordered
+
+    def _encode_group(self, vals: np.ndarray, enc, qmax) -> np.ndarray:
+        """POT-scaled single-tensor encoding via ``enc`` / ``qmax``."""
+        absmax = float(np.max(np.abs(vals))) if vals.size else 0.0
+        if absmax == 0:
+            return np.zeros_like(vals, dtype=np.float32)
+        s = _pot_scale(absmax, qmax)
+        return enc(vals, s)
 
     def quantize(self, x: np.ndarray, bits: int = None) -> np.ndarray:
         """Simplified single-tensor interface for distribution-testing harness.
@@ -703,7 +716,10 @@ class SQFormatActivations:
                 mask   = self._bank_mask(ch_imp, end - start)
                 bank_r = np.zeros_like(bank)
                 for j in range(end - start):
-                    bank_r[j] = _int_quantize_pot(bank[j], self.high_bits if mask[j] else self.low_bits)
+                    if mask[j]:
+                        bank_r[j] = self._encode_group(bank[j], self._enc_high, self._qmax_high)
+                    else:
+                        bank_r[j] = self._encode_group(bank[j], self._enc_low,  self._qmax_low)
                 result[start:end] = bank_r
             return result
 
@@ -716,9 +732,9 @@ class SQFormatActivations:
             mask = self._bank_mask(bank ** 2, end - start)
             bank_r = np.zeros(end - start, dtype=np.float32)
             if np.any(mask):
-                bank_r[mask]  = _int_quantize_pot(bank[mask],  self.high_bits)
+                bank_r[mask]  = self._encode_group(bank[mask],  self._enc_high, self._qmax_high)
             if np.any(~mask):
-                bank_r[~mask] = _int_quantize_pot(bank[~mask], self.low_bits)
+                bank_r[~mask] = self._encode_group(bank[~mask], self._enc_low,  self._qmax_low)
             result_flat[start:end] = bank_r
         return result_flat.reshape(x.shape)
 

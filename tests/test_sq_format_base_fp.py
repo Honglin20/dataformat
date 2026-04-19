@@ -60,3 +60,24 @@ def test_sqformat_base_fp_produces_fp_levels():
 def test_sqformat_rejects_unsupported_cell():
     with pytest.raises(ValueError, match="Unsupported SQ-Format cell"):
         SQFormat(base="fp", high_bits=2, low_bits=2)  # no FP2 in registry
+
+
+def test_sqformat_activations_base_int_default_unchanged():
+    from formats.sq_format import SQFormatActivations
+    rng = np.random.default_rng(2)
+    W = rng.standard_normal((128, 64)).astype(np.float32)
+    A = rng.standard_normal((32, 128)).astype(np.float32)
+    a = SQFormatActivations()
+    b = SQFormatActivations(base="int")
+    np.testing.assert_array_equal(a.quantize_weights(W, A.mean(0))[0],
+                                  b.quantize_weights(W, A.mean(0))[0])
+
+
+def test_sqformat_activations_base_fp_runs():
+    from formats.sq_format import SQFormatActivations
+    rng = np.random.default_rng(3)
+    W = rng.standard_normal((128, 64)).astype(np.float32)
+    A = rng.standard_normal((32, 128)).astype(np.float32)
+    fmt = SQFormatActivations(base="fp", high_bits=8, low_bits=4)
+    out = fmt.quantize_weights(W, A.mean(0))[0]
+    assert out.shape == W.shape
