@@ -24,7 +24,7 @@ programmatic use.
 from __future__ import annotations
 
 import os
-from typing import Dict
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -36,8 +36,75 @@ from experiments.fourbit.registry import (
 from experiments.fourbit.distribution_sets import (
     COMMON_DISTRIBUTIONS, LINEAR_WEIGHT_ACTIVATION, SMOOTH_FRIENDLY,
 )
-from distributions.metrics import qsnr_db, crest_factor, tensor_summary, fp16_qsnr_db
+from distributions.metrics import (
+    METRIC_REGISTRY,
+    tensor_summary,
+)
 from experiments.fourbit.pipeline import fp32_linear, Pipeline
+
+
+# ── Metric helpers ───────────────────────────────────────────────────────────
+#
+# Part-1 CSVs predate the registry. To keep the goldens byte-identical the
+# helpers below iterate ``config.metrics`` but preserve the legacy column
+# *order* (e.g. qsnr_y_db before qsnr_w_db). They also know which metrics
+# are single-tensor baselines (``fp16_qsnr_db``) vs pairwise metrics.
+
+_SINGLE_TENSOR_METRICS = {"fp16_qsnr_db"}
+
+
+def _metric_columns_single_tensor(config: FourBitConfig, ref, quant) -> dict:
+    """Produce the ``exp11``-style single-column-per-metric dict.
+
+    Pair metrics are evaluated against ``(ref, quant)``; single-tensor
+    baselines (``fp16_qsnr_db``) ignore ``quant``. The output keys are the
+    bare metric names (no role suffix) to match the legacy 1-D CSV.
+    """
+    out: dict = {}
+    for m in config.metrics:
+        fn = METRIC_REGISTRY[m.func]
+        if m.func in _SINGLE_TENSOR_METRICS:
+            out[m.name] = float(fn(ref, ref))
+        else:
+            out[m.name] = float(fn(ref, quant))
+    return out
+
+
+def _metric_columns_pair(
+    config: FourBitConfig,
+    tensors: Dict[str, tuple],
+    *,
+    pair_role_order: list[str],
+    single_role_order: list[str],
+) -> dict:
+    """Produce the ``exp12``/``exp13``-style role-suffixed columns.
+
+    ``tensors[role]`` must be a ``(ref, quant)`` tuple. Pair metrics iterate
+    roles in ``pair_role_order``; single-tensor baselines iterate
+    ``single_role_order``. The suffix convention matches the legacy columns
+    (``qsnr_y_db``, ``fp16_qsnr_w_db``, ...).
+    """
+    out: dict = {}
+    for m in config.metrics:
+        fn = METRIC_REGISTRY[m.func]
+        order = single_role_order if m.func in _SINGLE_TENSOR_METRICS else pair_role_order
+        for role in order:
+            ref, quant = tensors[role]
+            col = _metric_column_name(m.name, role)
+            if m.func in _SINGLE_TENSOR_METRICS:
+                out[col] = float(fn(ref, ref))
+            else:
+                out[col] = float(fn(ref, quant))
+    return out
+
+
+def _metric_column_name(metric_name: str, role: str) -> str:
+    """Preserve legacy ``qsnr_{role}_db`` naming by splicing role before ``_db``."""
+    role_lc = role.lower()
+    if metric_name.endswith("_db"):
+        stem = metric_name[: -len("_db")]
+        return f"{stem}_{role_lc}_db"
+    return f"{metric_name}_{role_lc}"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -73,25 +140,32 @@ def exp11_direct_quant(config: FourBitConfig) -> pd.DataFrame:
     n = config.n_samples
     formats = build_formats(config)
 
+    # Legacy column order: ``crest, kurtosis, abs_max, std``. We preserve it
+    # explicitly so the golden CSV remains byte-identical even though the
+    # config default ``tensor_stats`` list differs.
+    stat_columns: List[tuple] = [
+        ("crest",    "crest"),
+        ("kurtosis", "kurtosis"),
+        ("abs_max",  "max_abs"),
+        ("std",      "std"),
+    ]
+
     rows: list[dict] = []
     for dist in COMMON_DISTRIBUTIONS:
         x, dist_meta = dist.generate(n, rng_seed)
         stats = tensor_summary(x)
-        fp16_qsnr = fp16_qsnr_db(x)
 
         for fmt_name, fmt in formats.items():
             x_q = fmt.quantize(x)
-            rows.append({
+            row: dict = {
                 "distribution": dist.name,
                 "format":       fmt_name,
-                "qsnr_db":      qsnr_db(x, x_q),
-                "fp16_qsnr_db": fp16_qsnr,
-                "crest":        stats["crest"],
-                "kurtosis":     stats["kurtosis"],
-                "abs_max":      stats["max_abs"],
-                "std":          stats["std"],
-                "tags":         ",".join(dist.tags),
-            })
+            }
+            row.update(_metric_columns_single_tensor(config, x, x_q))
+            for out_name, summary_key in stat_columns:
+                row[out_name] = stats[summary_key]
+            row["tags"] = ",".join(dist.tags)
+            rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -125,27 +199,30 @@ def exp12_linear_wa(config: FourBitConfig) -> pd.DataFrame:
         x_stats = tensor_summary(X)
         w_stats = tensor_summary(W)
         y_stats = tensor_summary(Y_ref)
-        fp16_qsnr_x = fp16_qsnr_db(X)
-        fp16_qsnr_w = fp16_qsnr_db(W)
-        fp16_qsnr_y = fp16_qsnr_db(Y_ref)
 
         for fmt_name, pipe in pipelines_by_fmt.items():
             pipe.fit(X, W)   # no-op for Identity, but future-proof
             Y_q = pipe.simulate_linear(X, W)
-            rows.append({
-                "distribution":  lin.name,
-                "format":        fmt_name,
-                "qsnr_y_db":     qsnr_db(Y_ref, Y_q),
-                "qsnr_w_db":     qsnr_db(W, pipe.quantize_tensor(W, role="weight")),
-                "qsnr_x_db":     qsnr_db(X, pipe.quantize_tensor(X, role="activation")),
-                "fp16_qsnr_w_db": fp16_qsnr_w,
-                "fp16_qsnr_x_db": fp16_qsnr_x,
-                "fp16_qsnr_y_db": fp16_qsnr_y,
-                "crest_X":       x_stats["crest"],
-                "crest_W":       w_stats["crest"],
-                "crest_Y":       y_stats["crest"],
-                "tags":          ",".join(lin.tags),
-            })
+            W_q = pipe.quantize_tensor(W, role="weight")
+            X_q = pipe.quantize_tensor(X, role="activation")
+
+            tensors = {
+                "W": (W, W_q),
+                "X": (X, X_q),
+                "Y": (Y_ref, Y_q),
+            }
+
+            row: dict = {"distribution": lin.name, "format": fmt_name}
+            row.update(_metric_columns_pair(
+                config, tensors,
+                pair_role_order=["Y", "W", "X"],
+                single_role_order=["W", "X", "Y"],
+            ))
+            row["crest_X"] = x_stats["crest"]
+            row["crest_W"] = w_stats["crest"]
+            row["crest_Y"] = y_stats["crest"]
+            row["tags"] = ",".join(lin.tags)
+            rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -181,9 +258,6 @@ def exp13_smooth_transforms(config: FourBitConfig) -> pd.DataFrame:
         Y_ref = fp32_linear(X, W)
         x_stats = tensor_summary(X)
         w_stats = tensor_summary(W)
-        fp16_qsnr_x = fp16_qsnr_db(X)
-        fp16_qsnr_w = fp16_qsnr_db(W)
-        fp16_qsnr_y = fp16_qsnr_db(Y_ref)
 
         for fmt_spec in config.formats:
             fmt = formats[fmt_spec.display_name]
@@ -196,20 +270,26 @@ def exp13_smooth_transforms(config: FourBitConfig) -> pd.DataFrame:
                 W_q = pipe.quantize_tensor(W, role="weight")
                 X_q = pipe.quantize_tensor(X, role="activation")
 
-                rows.append({
+                tensors = {
+                    "W": (W, W_q),
+                    "X": (X, X_q),
+                    "Y": (Y_ref, Y_q),
+                }
+
+                row: dict = {
                     "distribution": lin.name,
                     "format":       fmt_spec.display_name,
                     "transform":    t_name,
-                    "qsnr_y_db":    qsnr_db(Y_ref, Y_q),
-                    "qsnr_w_db":    qsnr_db(W, W_q),
-                    "qsnr_x_db":    qsnr_db(X, X_q),
-                    "fp16_qsnr_w_db": fp16_qsnr_w,
-                    "fp16_qsnr_x_db": fp16_qsnr_x,
-                    "fp16_qsnr_y_db": fp16_qsnr_y,
-                    "crest_X":      x_stats["crest"],
-                    "crest_W":      w_stats["crest"],
-                    "tags":         ",".join(lin.tags),
-                })
+                }
+                row.update(_metric_columns_pair(
+                    config, tensors,
+                    pair_role_order=["Y", "W", "X"],
+                    single_role_order=["W", "X", "Y"],
+                ))
+                row["crest_X"] = x_stats["crest"]
+                row["crest_W"] = w_stats["crest"]
+                row["tags"] = ",".join(lin.tags)
+                rows.append(row)
     return pd.DataFrame(rows)
 
 
