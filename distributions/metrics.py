@@ -8,6 +8,8 @@ Metrics:
   5. EffBits  — Effective bit-width via rate-distortion theory
 """
 
+from typing import Callable, Dict
+
 import numpy as np
 from scipy.stats import entropy as _scipy_entropy
 
@@ -152,6 +154,19 @@ def crest_factor(x: np.ndarray) -> float:
     rms  = float(np.sqrt(np.mean(x * x)))
     return peak / rms if rms > 0 else 0.0
 
+def kurtosis(x: np.ndarray) -> float:
+    """Excess kurtosis of ``x`` (``0`` for a Gaussian)."""
+    x = np.asarray(x, dtype=np.float64).ravel()
+    if x.size == 0:
+        return 0.0
+    mean = float(np.mean(x))
+    dev  = x - mean
+    var  = float(np.mean(dev * dev))
+    if var <= 0.0:
+        return 0.0
+    return float(np.mean(dev ** 4) / (var ** 2)) - 3.0
+
+
 def tensor_summary(x: np.ndarray) -> dict:
     """Compact stat bundle: std, max_abs, crest (peak/std), crest_rms
     (peak/rms including mean), kurtosis, n."""
@@ -173,3 +188,39 @@ def tensor_summary(x: np.ndarray) -> dict:
         "kurtosis":  kurt,
         "n":         int(x.size),
     }
+
+
+# ── Registries ────────────────────────────────────────────────────────────────
+#
+# ``METRIC_REGISTRY`` holds pairwise (reference, quantized) metric functions;
+# ``TENSOR_STAT_REGISTRY`` holds single-tensor descriptive statistics.  Both
+# are extendable at runtime via :func:`register_metric`, which lets
+# experiments plug in custom columns without modifying this module.
+
+METRIC_REGISTRY: Dict[str, Callable] = {
+    "qsnr_db":      qsnr_db,
+    "snr_db":       snr_db,
+    "mse":          mse,
+    "fp16_qsnr_db": lambda ref, _q: fp16_qsnr_db(ref),   # single-tensor shim
+}
+
+TENSOR_STAT_REGISTRY: Dict[str, Callable[[np.ndarray], float]] = {
+    "crest":    crest_factor,
+    "kurtosis": kurtosis,
+}
+
+
+def register_metric(name: str, fn: Callable, kind: str = "pair") -> None:
+    """Register a metric under ``name``.
+
+    ``kind="pair"`` adds to :data:`METRIC_REGISTRY` (signature
+    ``fn(ref, quant) -> float``). ``kind="tensor_stat"`` adds to
+    :data:`TENSOR_STAT_REGISTRY` (signature ``fn(tensor) -> float``).
+    Any other ``kind`` raises :class:`ValueError`.
+    """
+    if kind == "pair":
+        METRIC_REGISTRY[name] = fn
+    elif kind == "tensor_stat":
+        TENSOR_STAT_REGISTRY[name] = fn
+    else:
+        raise ValueError(f"kind must be 'pair' or 'tensor_stat', got {kind!r}")
