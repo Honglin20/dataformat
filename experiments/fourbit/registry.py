@@ -62,9 +62,16 @@ def build_pipelines(config: FourBitConfig) -> List[Pipeline]:
         for t_spec in config.transforms:
             t = make_transform(t_spec.factory, **t_spec.kwargs)
             t.name = t_spec.display_name
+            fmt_inst = formats[fmt_spec.display_name]
+            # PR C / design R2: when Y quantisation is enabled, reuse the same
+            # format instance for W, A, and Y.  Default (quantize_output=False)
+            # preserves the W4A4 FP32-accumulator semantics so the existing
+            # golden CSVs stay byte-identical.
+            output_fmt = fmt_inst if config.quantize_output else None
             pipelines.append(Pipeline(
                 transform=t,
-                fmt=formats[fmt_spec.display_name],
+                fmt=fmt_inst,
+                output_fmt=output_fmt,
                 name=f"{t_spec.display_name}/{fmt_spec.display_name}",
             ))
     return pipelines

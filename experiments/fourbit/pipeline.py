@@ -37,10 +37,35 @@ import numpy as np
 from experiments.fourbit.transforms import Transform
 
 
+def _apply_output_fmt(out_fmt: object, y: np.ndarray) -> np.ndarray:
+    """Quantise a GEMM output tensor ``y`` with ``out_fmt``.
+
+    ``y`` has shape ``(batch, out_features)``.  For the generic format
+    case we just call ``out_fmt.quantize(y)``.  For SQ-Format variants
+    the class banks along the *K* axis (rows) of its 2-D input, which
+    for Y maps naturally onto the *out_features* axis (per design
+    decision R2 — "one bank per token").  We therefore transpose
+    ``y`` to ``(out_features, batch)`` around the call and transpose
+    back afterwards so the SQ banking aligns with output channels
+    rather than tokens.
+
+    Imports are done lazily to avoid circular-import with
+    ``formats/sq_format.py``.
+    """
+    from formats.sq_format import SQFormat, SQFormatActivations, SQFormatFP
+
+    if isinstance(out_fmt, (SQFormat, SQFormatActivations, SQFormatFP)):
+        y_t = np.ascontiguousarray(y.T)
+        y_tq = out_fmt.quantize(y_t)
+        return np.ascontiguousarray(y_tq.T)
+    return out_fmt.quantize(y)
+
+
 @dataclass
 class Pipeline:
     transform: Transform
     fmt: object   # any object with .quantize(x) -> np.ndarray and .name
+    output_fmt: object | None = None  # optional Y-quantiser; default FP32 accumulator
     name: str = ""
 
     def __post_init__(self):
@@ -97,6 +122,9 @@ class Pipeline:
 
         y = X_q @ W_q.T
         y = y * self.transform.output_correction()
+
+        if self.output_fmt is not None:
+            y = _apply_output_fmt(self.output_fmt, y.astype(np.float32))
 
         if bias is not None:
             y = y + bias
