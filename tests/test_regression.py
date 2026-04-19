@@ -106,6 +106,23 @@ def test_fourbit_part1():
         )
 
 
+def test_sqformat_part1():
+    """SQ-Format study Part 1: 17 cells × 3 transforms × 24 distributions.
+
+    Goldens cover the three Part-1 CSVs at the current SQ-Format default
+    config (Y quantisation on, QuantizedMHA on, profile_samples=128).
+    Refresh by deleting the fixture files and re-running the CLI.
+    """
+    _run([sys.executable, "run_sqformat_study.py", "--part", "1"])
+    for name in ("exp11_direct_quant.csv",
+                 "exp12_linear_wa.csv",
+                 "exp13_smooth_transforms.csv"):
+        _compare_csv(
+            RESULTS / "sqformat" / "part1" / name,
+            GOLDEN  / "sqformat" / "part1" / name,
+        )
+
+
 # NOTE: test_mnist_profile intentionally omitted.
 # examples/profile_mnist.py:93 uses torch.randperm without a seed, so the
 # 64-image subset differs per run. Fixing it is out of scope for the refactor
