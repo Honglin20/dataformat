@@ -31,7 +31,7 @@ import torch.utils.data as tdata
 
 from experiments.fourbit.config import FourBitConfig
 from experiments.fourbit.registry import build_formats, make_fresh_transform
-from experiments.fourbit.pipeline import Pipeline
+from experiments.fourbit.pipeline import Pipeline, _apply_output_fmt
 from experiments.fourbit.profiler_v2 import LayerRecord
 
 logger = logging.getLogger("fourbit.accuracy")
@@ -62,6 +62,10 @@ class QuantLinear(nn.Linear):
             dtype=linear.weight.dtype,
         )
         self.pipe = pipe
+        # PR C: mirror Pipeline.output_fmt so the PyTorch forward applies the
+        # same optional Y quantisation as simulate_linear.  Default (None)
+        # keeps the FP32-accumulator behaviour unchanged.
+        self.output_fmt = getattr(pipe, "output_fmt", None)
 
         W = linear.weight.detach().cpu().float().numpy().copy()
         W_t = self.pipe.transform.forward_weight(W)
@@ -85,6 +89,20 @@ class QuantLinear(nn.Linear):
         x_tq = torch.from_numpy(flat_tq.reshape(orig_shape)).to(x.device, x.dtype)
 
         y = (x_tq @ self.weight.T) * self.pipe.transform.output_correction()
+
+        if self.output_fmt is not None:
+            # Quantise Y in the numpy domain so SQ-Format's transpose-aware
+            # helper can be reused verbatim; the GEMM stays on the PyTorch
+            # tensor path up to this point for autograd-compatibility.
+            orig_device, orig_dtype = y.device, y.dtype
+            flat_y = y.detach().cpu().float().numpy()
+            out_shape = flat_y.shape
+            flat_y2d = flat_y.reshape(-1, out_shape[-1])
+            flat_y2d_q = _apply_output_fmt(self.output_fmt, flat_y2d)
+            y = torch.from_numpy(
+                flat_y2d_q.reshape(out_shape).astype(np.float32)
+            ).to(orig_device, orig_dtype)
+
         if self.bias is not None:
             y = y + self.bias
         return y
