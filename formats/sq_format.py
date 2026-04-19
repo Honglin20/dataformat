@@ -71,6 +71,44 @@ from formats._pot import (
     pot_scale_ceil as _pot_scale,
     pot_scale_ceil_vec as _pot_scale_vec,
 )
+from formats.mxfp import _E2M1_POS, _fp8_e4m3_vec
+
+
+# ── Element encoders ──────────────────────────────────────────────────────────
+#
+# Element-level encoder registry keyed by (base, bits). Each entry is a tuple
+# of (encode_fn, q_max).  The encode functions accept the raw value tensor and
+# a scale (either scalar or broadcastable array) and return dequantized values
+# on the same grid (level_set * scale).  Banking / mask / sentinel logic in
+# SQFormat and SQFormatActivations remains unchanged; only the per-element
+# encoding swaps.
+
+
+def _int_encode(x: np.ndarray, scale, q_max: int) -> np.ndarray:
+    q = np.clip(np.round(x / np.maximum(scale, 1e-38)), -q_max, q_max)
+    return (q * scale).astype(np.float32)
+
+
+def _fp_e2m1_encode(x: np.ndarray, scale) -> np.ndarray:
+    x_scaled = x / np.maximum(scale, 1e-38)
+    sign = np.where(x_scaled < 0, -1.0, 1.0).astype(np.float32)
+    x_abs = np.clip(np.abs(x_scaled), 0.0, float(_E2M1_POS[-1]))
+    dists = np.abs(x_abs[..., None] - _E2M1_POS)
+    idx = np.argmin(dists, axis=-1)
+    return (sign * _E2M1_POS[idx] * scale).astype(np.float32)
+
+
+def _fp_e4m3_encode(x: np.ndarray, scale) -> np.ndarray:
+    return (_fp8_e4m3_vec(x / np.maximum(scale, 1e-38)) * scale).astype(np.float32)
+
+
+_ELEMENT_ENCODERS = {
+    ("int", 8): (lambda x, scale: _int_encode(x, scale, 127), 127),
+    ("int", 4): (lambda x, scale: _int_encode(x, scale,   7),   7),
+    ("int", 2): (lambda x, scale: _int_encode(x, scale,   1),   1),
+    ("fp",  8): (_fp_e4m3_encode, 448.0),
+    ("fp",  4): (_fp_e2m1_encode,   6.0),
+}
 
 
 # ── Low-level helpers ──────────────────────────────────────────────────────────
