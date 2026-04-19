@@ -1,8 +1,10 @@
 # Quantization Format Research — Data Format Study
 
 Benchmarks quantization formats for deep learning across common weight/activation
-distributions. Covers INT4/8, MXINT4/8, MXFP4/8, HAD+INT, and SQ-Format,
-evaluated on 8 distribution families (24 variants).
+distributions. Covers INT4/8, MXINT4/8, MXFP4/8, HAD+INT, and SQ-Format
+(Alg 1 / Alg 2, INT and FP bases), evaluated on 8 distribution families
+(24 variants). Dedicated studies: 4-bit (`run_4bit_study.py`) and
+17-cell SQ-Format matrix (`run_sqformat_study.py`).
 
 > Extended analysis: see `analysis.md`
 
@@ -73,6 +75,30 @@ Transforms work the same way — add an entry to `TRANSFORM_FACTORIES` in
 
 ---
 
+## SQ-Format Study (`experiments/sqformat/`)
+
+17-cell SQ-Format comparison matrix (Alg 1 / Alg 2 × {INT, FP} bases × 5 INT / 3
+FP bit-split pairs + one legacy FP-hybrid cell), reusing the 4-bit study
+Part 1/Part 2 infrastructure with two toggles flipped on:
+
+- `quantize_output=True` — `simulate_linear` also quantises Y (transposed so the
+  bank axis aligns with `out_features`; the cell auto-adapts `bank_size` when
+  `out_features < bank_size`).
+- `use_quantizable_mha=True` — MNIST-Transformer attention is rewritten as
+  four `nn.Linear`s (`QuantizedMHA`) so Q/K/V/out_proj are visible to
+  `QuantLinear`. Requires a model trained (or re-loadable) under the flag.
+
+```bash
+python run_sqformat_study.py --part 1
+python run_sqformat_study.py --part 2 --model-path results/mnist/model.pt
+python run_sqformat_study.py --profile-samples 256   # override default 128
+```
+
+Outputs mirror the 4-bit study at `results/sqformat/`. Regression protection:
+`tests/test_regression.py::test_sqformat_part1` pins the three Part-1 CSVs.
+
+---
+
 ## Project Structure
 
 ```
@@ -80,6 +106,7 @@ dataformat/
 ├── config.py                        # Global constants (block size, bit-widths, energy)
 ├── run_all.py                       # Master pipeline (all phases)
 ├── run_4bit_study.py                # Shim → experiments.fourbit.cli.main
+├── run_sqformat_study.py            # Shim → experiments.sqformat.cli.main
 ├── generate_qsnr_table.py           # Shim → utils.qsnr_table.main
 │
 ├── formats/                         # Canonical format primitives
@@ -113,24 +140,33 @@ dataformat/
 │   ├── bitwidth_ablation.py         # Phase 3: 4-bit vs 8-bit ablation
 │   ├── exp1_common_distributions.py # Standalone Exp 1 (9 formats × 24 distributions)
 │   ├── exp2_crest_factor.py         # Standalone Exp 2 (SQNR vs crest factor)
-│   └── fourbit/                     # 4-bit data format study (Part 1 + Part 2)
-│       ├── cli.py                   # Entry point (called by run_4bit_study.py shim)
-│       ├── config.py / registry.py / pipeline.py
-│       ├── part1.py / part2.py / accuracy.py
-│       ├── reporter.py / profiler_v2.py
-│       ├── formats.py / transforms.py
-│       └── distribution_sets.py     # Curated DistSpec / LinearSpec lists
+│   ├── fourbit/                     # 4-bit data format study (Part 1 + Part 2)
+│   │   ├── cli.py                   # Entry point (called by run_4bit_study.py shim)
+│   │   ├── config.py / registry.py / pipeline.py
+│   │   ├── part1.py / part2.py / accuracy.py
+│   │   ├── reporter.py / profiler_v2.py
+│   │   ├── formats.py / transforms.py
+│   │   └── distribution_sets.py     # Curated DistSpec / LinearSpec lists
+│   └── sqformat/                    # SQ-Format study (17 cells, reuses fourbit infra)
+│       ├── cli.py                   # Entry point (called by run_sqformat_study.py shim)
+│       └── config.py                # 17-cell DEFAULT_CONFIG (quantize_output + QuantizedMHA on)
 │
 ├── examples/
 │   ├── train_mnist.py               # Train MNISTTransformer
 │   ├── profile_mnist.py             # Profile all formats on trained model
-│   └── generate_report.py           # Build HTML report from profiler output
+│   ├── generate_report.py           # Build HTML report from profiler output
+│   ├── model.py                     # MNISTTransformer (use_quantizable_mha flag)
+│   └── model_quantizable.py         # QuantizedMHA: nn.MHA drop-in with visible q/k/v/out Linears
 │
 ├── visualization/                   # Figure generators (called by run_all.py Phase 5)
 │
 ├── tests/
-│   ├── test_regression.py           # Golden CLI regression harness (exp1/exp2/fourbit)
+│   ├── test_regression.py           # Golden CLI regression (exp1/exp2/fourbit/sqformat part1 = 5)
 │   ├── test_pot_scale_equivalence.py
+│   ├── test_sq_format_base_fp.py    # Element-encoder registry + base={int,fp} semantics
+│   ├── test_pipeline_output_quant.py # Y quantisation + R2 auto-adapt for SQ-Format
+│   ├── test_quantizable_mha.py      # QuantizedMHA ≈ nn.MultiheadAttention in FP32
+│   ├── test_sqformat_smoke.py test_metrics_registry.py
 │   ├── fixtures/golden/             # Committed reference CSVs for regression
 │   └── …                            # unit tests for each format/distribution
 │
