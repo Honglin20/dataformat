@@ -47,3 +47,30 @@ def test_fourbit_config_default_metrics_match_current_columns():
         ("qsnr_db",      ("W", "X", "Y")),
         ("fp16_qsnr_db", ("W", "X", "Y")),
     }
+
+
+def test_profiler_emits_custom_metric_when_configured():
+    import numpy as np
+    from experiments.fourbit.config import DEFAULT_CONFIG, MetricSpec
+    from experiments.fourbit.profiler_v2 import analyse_layer
+    from distributions.metrics import register_metric
+
+    register_metric("unit_metric", lambda r, q: 42.0, kind="pair")
+
+    cfg = DEFAULT_CONFIG.__class__(**{
+        **DEFAULT_CONFIG.__dict__,
+        "metrics": [MetricSpec("unit_metric", "unit_metric", roles=["W"])],
+    })
+    # W is (out, in) = (8, 4); X is (batch, in) = (4, 4); Y = X @ W.T => (4, 8).
+    # The plan's example used mismatched shapes (W=(8,4), X=(4,8)) which caused
+    # every pipeline call to raise and land in the failure branch. We use
+    # matching shapes so the metric is evaluated normally.
+    rec = {
+        "W":    np.ones((8, 4), dtype=np.float32),
+        "X":    np.ones((4, 4), dtype=np.float32),
+        "Y":    np.ones((4, 8), dtype=np.float32),
+        "bias": None,
+    }
+    df = analyse_layer(rec, "layer0", cfg)
+    assert "unit_metric_w" in df.columns
+    assert (df["unit_metric_w"] == 42.0).all()

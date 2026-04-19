@@ -54,7 +54,12 @@ import pandas as pd
 from experiments.fourbit.config import FourBitConfig
 from experiments.fourbit.registry import build_formats, make_fresh_transform
 from experiments.fourbit.pipeline import Pipeline, fp32_linear
-from distributions.metrics import qsnr_db, tensor_summary, fp16_qsnr_db
+from distributions.metrics import (
+    METRIC_REGISTRY,
+    qsnr_db,
+    tensor_summary,
+    fp16_qsnr_db,
+)
 
 logger = logging.getLogger("fourbit.profiler")
 
@@ -176,13 +181,6 @@ def analyse_layer(
     stats_X = tensor_summary(X)
     stats_Y = tensor_summary(Y_ref)
 
-    # FP16 baseline QSNRs (per-tensor, format-independent) — these appear as
-    # constant columns across every format row of a given layer, so the
-    # reporter can render them alongside the 4-bit QSNRs without a join.
-    fp16_qsnr_w = fp16_qsnr_db(W)
-    fp16_qsnr_x = fp16_qsnr_db(X)
-    fp16_qsnr_y = fp16_qsnr_db(Y_ref)
-
     formats = build_formats(config)
     rows: list[dict] = []
 
@@ -194,24 +192,21 @@ def analyse_layer(
         for t_spec in config.transforms:
             t_name = t_spec.display_name
 
+            base_row: dict = {
+                "layer":     layer_name,
+                "format":    fmt_spec.display_name,
+                "transform": t_name,
+            }
+
             if t_name == "had" and not had_applicable:
                 # Record an explicit NaN row so the reporter can see the gap
                 # rather than silently dropping the combination.
-                rows.append({
-                    "layer":        layer_name,
-                    "format":       fmt_spec.display_name,
-                    "transform":    t_name,
-                    "qsnr_w_db":    float("nan"),
-                    "qsnr_x_db":    float("nan"),
-                    "qsnr_y_db":    float("nan"),
-                    "fp16_qsnr_w_db": fp16_qsnr_w,
-                    "fp16_qsnr_x_db": fp16_qsnr_x,
-                    "fp16_qsnr_y_db": fp16_qsnr_y,
-                    "reason":       "HAD requires power-of-2 in_features",
-                    **_prefix(stats_W, "W_"),
-                    **_prefix(stats_X, "X_"),
-                    **_prefix(stats_Y, "Y_"),
-                })
+                rows.append(_build_row(
+                    base_row, config, W, X, Y_ref,
+                    W_q=None, X_q=None, Y_q=None,
+                    stats_W=stats_W, stats_X=stats_X, stats_Y=stats_Y,
+                    reason="HAD requires power-of-2 in_features",
+                ))
                 continue
 
             t = make_fresh_transform(config, t_name)
@@ -226,43 +221,109 @@ def analyse_layer(
                     "Layer %s / %s / %s failed: %s",
                     layer_name, fmt_spec.display_name, t_name, exc,
                 )
-                rows.append({
-                    "layer":        layer_name,
-                    "format":       fmt_spec.display_name,
-                    "transform":    t_name,
-                    "qsnr_w_db":    float("nan"),
-                    "qsnr_x_db":    float("nan"),
-                    "qsnr_y_db":    float("nan"),
-                    "fp16_qsnr_w_db": fp16_qsnr_w,
-                    "fp16_qsnr_x_db": fp16_qsnr_x,
-                    "fp16_qsnr_y_db": fp16_qsnr_y,
-                    "reason":       str(exc),
-                    **_prefix(stats_W, "W_"),
-                    **_prefix(stats_X, "X_"),
-                    **_prefix(stats_Y, "Y_"),
-                })
+                rows.append(_build_row(
+                    base_row, config, W, X, Y_ref,
+                    W_q=None, X_q=None, Y_q=None,
+                    stats_W=stats_W, stats_X=stats_X, stats_Y=stats_Y,
+                    reason=str(exc),
+                ))
                 continue
 
             # For the Y QSNR we want to compare the bias-adjusted reference
             # with the simulation output.  simulate_linear already adds the
             # bias, and Y_ref was recorded post-bias too.
-            rows.append({
-                "layer":        layer_name,
-                "format":       fmt_spec.display_name,
-                "transform":    t_name,
-                "qsnr_w_db":    _safe_qsnr(W, W_q),
-                "qsnr_x_db":    _safe_qsnr(X, X_q),
-                "qsnr_y_db":    _safe_qsnr(Y_ref, Y_q),
-                "fp16_qsnr_w_db": fp16_qsnr_w,
-                "fp16_qsnr_x_db": fp16_qsnr_x,
-                "fp16_qsnr_y_db": fp16_qsnr_y,
-                "reason":       "",
-                **_prefix(stats_W, "W_"),
-                **_prefix(stats_X, "X_"),
-                **_prefix(stats_Y, "Y_"),
-            })
+            rows.append(_build_row(
+                base_row, config, W, X, Y_ref,
+                W_q=W_q, X_q=X_q, Y_q=Y_q,
+                stats_W=stats_W, stats_X=stats_X, stats_Y=stats_Y,
+                reason="",
+            ))
 
     return pd.DataFrame(rows)
+
+
+def _build_row(
+    base_row: dict,
+    config: FourBitConfig,
+    W: np.ndarray,
+    X: np.ndarray,
+    Y_ref: np.ndarray,
+    *,
+    W_q,
+    X_q,
+    Y_q,
+    stats_W: dict,
+    stats_X: dict,
+    stats_Y: dict,
+    reason: str,
+) -> dict:
+    """Assemble one CSV row by iterating ``config.metrics``.
+
+    Column order is:
+
+      1. ``base_row`` keys (``layer``, ``format``, ``transform``)
+      2. One column per ``(metric, role)`` pair in declaration order,
+         named ``f"{metric.name}_{role.lower()}_db"`` when the metric name
+         already carries ``_db``-style semantics. We preserve the legacy
+         ``qsnr_{w,x,y}_db`` / ``fp16_qsnr_{w,x,y}_db`` naming by appending
+         ``_{role.lower()}_db`` to the base metric name if the name does
+         **not** already end in ``_db``; otherwise we splice the role in
+         before ``_db``. This matches the current hard-coded columns.
+      3. ``reason``
+      4. Per-tensor ``tensor_summary`` stats, prefixed ``W_``, ``X_``, ``Y_``.
+    """
+    row: dict = dict(base_row)
+
+    tensors: Dict[str, tuple] = {
+        "W": (W, W_q),
+        "X": (X, X_q),
+        "Y": (Y_ref, Y_q),
+    }
+
+    for m in config.metrics:
+        fn = METRIC_REGISTRY[m.func]
+        for role in m.roles:
+            ref, quant = tensors[role]
+            col = _metric_column_name(m.name, role)
+            if quant is None:
+                # Failure / skip rows retain NaN for pair metrics whose
+                # quantized tensor is missing, but single-tensor metrics
+                # (fp16 baselines) still evaluate against the reference.
+                if _is_single_tensor_metric(m.func):
+                    row[col] = float(fn(ref, ref))
+                else:
+                    row[col] = float("nan")
+            else:
+                row[col] = float(fn(ref, quant))
+
+    row["reason"] = reason
+
+    row.update(_prefix(stats_W, "W_"))
+    row.update(_prefix(stats_X, "X_"))
+    row.update(_prefix(stats_Y, "Y_"))
+
+    return row
+
+
+def _metric_column_name(metric_name: str, role: str) -> str:
+    """Build the column name for ``(metric_name, role)``.
+
+    Preserves legacy naming: ``qsnr_db`` × ``W`` → ``qsnr_w_db``,
+    ``fp16_qsnr_db`` × ``X`` → ``fp16_qsnr_x_db``. For any other metric
+    name (custom extensions) we simply append ``_{role.lower()}``.
+    """
+    role_lc = role.lower()
+    if metric_name.endswith("_db"):
+        stem = metric_name[: -len("_db")]
+        return f"{stem}_{role_lc}_db"
+    return f"{metric_name}_{role_lc}"
+
+
+def _is_single_tensor_metric(func_key: str) -> bool:
+    """The ``fp16_qsnr_db`` entry is a reference-only baseline — it must
+    still populate for failure rows. This helper marks such metrics so
+    :func:`_build_row` knows to evaluate them even when ``quant`` is None."""
+    return func_key == "fp16_qsnr_db"
 
 
 def _prefix(d: dict, pref: str) -> dict:
