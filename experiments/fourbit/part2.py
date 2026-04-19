@@ -32,13 +32,35 @@ from experiments.fourbit.accuracy import accuracy_sweep
 
 # ── Model loading ────────────────────────────────────────────────────────────
 
-def _load_or_train_model(model_path: str, data_dir: str) -> torch.nn.Module:
-    """Load ``model.pt`` if it exists; otherwise train a quick MNIST Transformer."""
+def _load_or_train_model(
+    model_path: str,
+    data_dir: str,
+    use_quantizable_mha: bool = False,
+) -> torch.nn.Module:
+    """Load ``model.pt`` if it exists; otherwise train a quick MNIST Transformer.
+
+    ``use_quantizable_mha`` (default False) applies AFTER loading the
+    checkpoint so a model trained with legacy ``nn.MultiheadAttention``
+    can still be swapped over to :class:`QuantizedMHA` for the accuracy
+    sweep without changing the on-disk state_dict layout.
+    """
     from examples.model import MNISTTransformer
     model = MNISTTransformer()
     if os.path.exists(model_path):
         model.load_state_dict(torch.load(model_path, map_location="cpu"))
-        return model.eval()
+        model = model.eval()
+        if use_quantizable_mha:
+            from examples.model_quantizable import QuantizedMHA
+            for layer in model.encoder.layers:
+                ref = layer.self_attn
+                q = QuantizedMHA(
+                    embed_dim=ref.embed_dim,
+                    num_heads=ref.num_heads,
+                    bias=ref.in_proj_bias is not None,
+                )
+                q.load_from_nn(ref)
+                layer.self_attn = q
+        return model
 
     print(f"[Part 2] No checkpoint at {model_path}; training 2 quick epochs ...")
     import torch.nn as nn
@@ -96,7 +118,10 @@ def run(
         FP32 / FP16 baseline + every (format, transform) top-1 accuracy on
         the same held-out MNIST test subset.
     """
-    model = _load_or_train_model(model_path, data_dir)
+    model = _load_or_train_model(
+        model_path, data_dir,
+        use_quantizable_mha=getattr(config, "use_quantizable_mha", False),
+    )
     loader = _make_loader(data_dir, config.profile_samples)
 
     print(f"[Part 2] Collecting tensors from {config.profile_samples} samples ...")

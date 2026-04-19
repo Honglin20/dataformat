@@ -90,6 +90,13 @@ class FourBitConfig:
     # golden regression CSVs byte-identical.
     quantize_output: bool = False
 
+    # When True, the Part 2 accuracy sweep instantiates
+    # ``MNISTTransformer(use_quantizable_mha=True)`` so that every attention
+    # Linear (Q/K/V/out_proj) is visible to ``QuantLinear``.  Default False
+    # keeps the legacy model (``nn.MultiheadAttention``) which bypasses
+    # ``Module.forward`` — those four Linears are skipped in the wrap pass.
+    use_quantizable_mha: bool = False
+
     # Output
     output_dir: str = "results/fourbit"
 

@@ -11,7 +11,15 @@ import torch.nn as nn
 
 
 class MNISTTransformer(nn.Module):
-    def __init__(self, d_model=128, nhead=4, num_layers=2, dim_ff=256, dropout=0.1):
+    def __init__(
+        self,
+        d_model=128,
+        nhead=4,
+        num_layers=2,
+        dim_ff=256,
+        dropout=0.1,
+        use_quantizable_mha: bool = False,
+    ):
         super().__init__()
         self.embed = nn.Linear(28, d_model)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
@@ -23,6 +31,20 @@ class MNISTTransformer(nn.Module):
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.classifier = nn.Linear(d_model, 10)
         self._init_weights()
+        if use_quantizable_mha:
+            # Replace each encoder layer's ``self_attn`` with a QuantizedMHA
+            # that copies the current weights.  This must run AFTER
+            # ``_init_weights`` so the copy sees initialised parameters.
+            from examples.model_quantizable import QuantizedMHA
+            for layer in self.encoder.layers:
+                ref = layer.self_attn
+                q = QuantizedMHA(
+                    embed_dim=d_model,
+                    num_heads=nhead,
+                    bias=ref.in_proj_bias is not None,
+                )
+                q.load_from_nn(ref)
+                layer.self_attn = q
 
     def _init_weights(self):
         nn.init.trunc_normal_(self.cls_token, std=0.02)
