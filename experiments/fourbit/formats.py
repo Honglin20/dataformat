@@ -60,6 +60,9 @@ from formats.int_variants import (
     Log4PerChannel,
     NF4FP8PerChannel,
 )
+# SQ-Format variants are registered so ``experiments/sqformat/config.py``
+# can declaratively build the 16-cell study matrix via FormatSpec.kwargs.
+from formats.sq_format import SQFormat, SQFormatActivations, SQFormatFP
 from config import NF4_LEVELS
 
 
@@ -182,6 +185,11 @@ FORMAT_FACTORIES = {
     "nvfp4":               make_nvfp4,
     "mxint4":              make_mxint4,
     "mxfp4":               make_mxfp4,
+    # SQ-Format family (Algorithm 1 + Algorithm 2 + legacy FP8/INT hybrid).
+    # kwargs wire up ``base``/``high_bits``/``low_bits`` per cell.
+    "sqformat_alg1":       SQFormat,
+    "sqformat_alg2":       SQFormatActivations,
+    "sqformat_fp_hybrid":  SQFormatFP,
 }
 
 
