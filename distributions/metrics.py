@@ -204,9 +204,23 @@ METRIC_REGISTRY: Dict[str, Callable] = {
     "fp16_qsnr_db": lambda ref, _q: fp16_qsnr_db(ref),   # single-tensor shim
 }
 
+def _flat_stat(fn):
+    def _wrapped(x):
+        a = np.asarray(x, dtype=np.float64).ravel()
+        if a.size == 0:
+            return 0.0
+        return float(fn(a))
+    return _wrapped
+
+
 TENSOR_STAT_REGISTRY: Dict[str, Callable[[np.ndarray], float]] = {
     "crest":    crest_factor,
     "kurtosis": kurtosis,
+    "mean":     _flat_stat(np.mean),
+    "std":      _flat_stat(np.std),
+    "min":      _flat_stat(np.min),
+    "max":      _flat_stat(np.max),
+    "abs_max":  _flat_stat(lambda a: np.max(np.abs(a))),
 }
 
 

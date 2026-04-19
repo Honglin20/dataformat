@@ -67,6 +67,11 @@ class FourBitConfig:
         MetricSpec("qsnr_db",      "qsnr_db"),
         MetricSpec("fp16_qsnr_db", "fp16_qsnr_db"),
     ])
+    # Descriptive single-tensor stats emitted by Part-1 CSVs.  Each entry must
+    # be a key in :data:`distributions.metrics.TENSOR_STAT_REGISTRY`; register
+    # new ones via ``register_metric(..., kind="tensor_stat")``.  exp11 emits
+    # one column per stat (no role suffix); exp12/exp13 emit ``{stat}_{ROLE}``
+    # for roles X, W, (Y in exp12 only).
     tensor_stats: List[str] = field(default_factory=lambda: [
         "mean", "std", "min", "max", "crest", "kurtosis",
     ])

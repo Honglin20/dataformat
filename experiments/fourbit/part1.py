@@ -24,7 +24,7 @@ programmatic use.
 from __future__ import annotations
 
 import os
-from typing import Dict, List
+from typing import Dict
 
 import numpy as np
 import pandas as pd
@@ -38,7 +38,7 @@ from experiments.fourbit.distribution_sets import (
 )
 from distributions.metrics import (
     METRIC_REGISTRY,
-    tensor_summary,
+    TENSOR_STAT_REGISTRY,
 )
 from experiments.fourbit.pipeline import fp32_linear, Pipeline
 
@@ -107,6 +107,30 @@ def _metric_column_name(metric_name: str, role: str) -> str:
     return f"{metric_name}_{role_lc}"
 
 
+# ── Tensor-stat helpers ──────────────────────────────────────────────────────
+#
+# Driven by ``config.tensor_stats`` so new descriptive stats can be plugged in
+# via ``register_metric(..., kind="tensor_stat")`` without touching part1.
+
+def _tensor_stat_columns_single(config: FourBitConfig, x) -> dict:
+    """For exp11: one column per stat in ``config.tensor_stats``, no role suffix."""
+    return {name: TENSOR_STAT_REGISTRY[name](x) for name in config.tensor_stats}
+
+
+def _tensor_stat_columns_pair(
+    config: FourBitConfig,
+    tensors: Dict[str, np.ndarray],
+    roles: list[str],
+) -> dict:
+    """For exp12/exp13: emit ``{stat}_{ROLE}`` for each role in the given order."""
+    out: dict = {}
+    for stat_name in config.tensor_stats:
+        fn = TENSOR_STAT_REGISTRY[stat_name]
+        for role in roles:
+            out[f"{stat_name}_{role}"] = fn(tensors[role])
+    return out
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _pad_pow2(x: np.ndarray, axis: int = -1) -> np.ndarray:
@@ -140,20 +164,9 @@ def exp11_direct_quant(config: FourBitConfig) -> pd.DataFrame:
     n = config.n_samples
     formats = build_formats(config)
 
-    # Legacy column order: ``crest, kurtosis, abs_max, std``. We preserve it
-    # explicitly so the golden CSV remains byte-identical even though the
-    # config default ``tensor_stats`` list differs.
-    stat_columns: List[tuple] = [
-        ("crest",    "crest"),
-        ("kurtosis", "kurtosis"),
-        ("abs_max",  "max_abs"),
-        ("std",      "std"),
-    ]
-
     rows: list[dict] = []
     for dist in COMMON_DISTRIBUTIONS:
         x, dist_meta = dist.generate(n, rng_seed)
-        stats = tensor_summary(x)
 
         for fmt_name, fmt in formats.items():
             x_q = fmt.quantize(x)
@@ -162,8 +175,7 @@ def exp11_direct_quant(config: FourBitConfig) -> pd.DataFrame:
                 "format":       fmt_name,
             }
             row.update(_metric_columns_single_tensor(config, x, x_q))
-            for out_name, summary_key in stat_columns:
-                row[out_name] = stats[summary_key]
+            row.update(_tensor_stat_columns_single(config, x))
             row["tags"] = ",".join(dist.tags)
             rows.append(row)
     return pd.DataFrame(rows)
@@ -196,9 +208,6 @@ def exp12_linear_wa(config: FourBitConfig) -> pd.DataFrame:
             seed=config.seed,
         )
         Y_ref = fp32_linear(X, W)
-        x_stats = tensor_summary(X)
-        w_stats = tensor_summary(W)
-        y_stats = tensor_summary(Y_ref)
 
         for fmt_name, pipe in pipelines_by_fmt.items():
             pipe.fit(X, W)   # no-op for Identity, but future-proof
@@ -218,9 +227,9 @@ def exp12_linear_wa(config: FourBitConfig) -> pd.DataFrame:
                 pair_role_order=["Y", "W", "X"],
                 single_role_order=["W", "X", "Y"],
             ))
-            row["crest_X"] = x_stats["crest"]
-            row["crest_W"] = w_stats["crest"]
-            row["crest_Y"] = y_stats["crest"]
+            row.update(_tensor_stat_columns_pair(
+                config, {"W": W, "X": X, "Y": Y_ref}, roles=["X", "W", "Y"],
+            ))
             row["tags"] = ",".join(lin.tags)
             rows.append(row)
     return pd.DataFrame(rows)
@@ -256,8 +265,6 @@ def exp13_smooth_transforms(config: FourBitConfig) -> pd.DataFrame:
             seed=config.seed,
         )
         Y_ref = fp32_linear(X, W)
-        x_stats = tensor_summary(X)
-        w_stats = tensor_summary(W)
 
         for fmt_spec in config.formats:
             fmt = formats[fmt_spec.display_name]
@@ -286,8 +293,9 @@ def exp13_smooth_transforms(config: FourBitConfig) -> pd.DataFrame:
                     pair_role_order=["Y", "W", "X"],
                     single_role_order=["W", "X", "Y"],
                 ))
-                row["crest_X"] = x_stats["crest"]
-                row["crest_W"] = w_stats["crest"]
+                row.update(_tensor_stat_columns_pair(
+                    config, {"W": W, "X": X}, roles=["X", "W"],
+                ))
                 row["tags"] = ",".join(lin.tags)
                 rows.append(row)
     return pd.DataFrame(rows)
