@@ -82,6 +82,14 @@ class FourBitConfig:
     profile_samples: int = 256
     smooth_alpha: float = 0.5
 
+    # Optional Y quantisation at GEMM output.  When True, :func:`build_pipelines`
+    # passes ``output_fmt=fmt`` into every Pipeline, so simulate_linear also
+    # quantises Y (after output_correction, before bias) using the same format
+    # instance that was used for W and A.  Default False preserves the W4A4
+    # accumulator-in-FP32 semantics of the existing 4-bit study and keeps the
+    # golden regression CSVs byte-identical.
+    quantize_output: bool = False
+
     # Output
     output_dir: str = "results/fourbit"
 
