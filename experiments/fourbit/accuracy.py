@@ -258,46 +258,40 @@ class AccuracyRow:
 def accuracy_sweep(
     model: nn.Module,
     layers: Dict[str, LayerRecord],
-    loader: tdata.DataLoader,
     config: FourBitConfig,
-    *,
-    eval_fn: Optional[Callable[[nn.Module, tdata.DataLoader], float]] = None,
+    eval_fn: Callable[[nn.Module], float],
 ) -> "list[dict]":
     """Run FP32 / FP16 baselines + every (format, transform) combination.
 
     Parameters
     ----------
-    eval_fn : Callable[[nn.Module, DataLoader], float] | None
-        Function that measures model quality.  Signature::
+    eval_fn : Callable[[nn.Module], float]
+        Function that receives the (possibly quantised) model and returns a
+        scalar metric.  The loader and any other context should be captured
+        via closure::
 
-            def eval_fn(model: nn.Module, loader: DataLoader) -> float:
+            def eval_fn(model):
                 ...
+                return metric_value
 
-        When ``None`` (default), the built-in MNIST top-1 accuracy
-        function :func:`_eval_accuracy` is used, preserving the original
-        behaviour.  When provided, it is called for both baselines and
-        every (format × transform) combination.  For the FP16 baseline the
-        model passed to ``eval_fn`` is already cast to ``torch.float16``
-        via :func:`_cast_model_fp16`.
+        Called for FP32 baseline (original model), FP16 baseline (model
+        cast to ``torch.float16`` via :func:`_cast_model_fp16`), and every
+        (format × transform) combination.
 
     Returns a list of dicts ready for ``pd.DataFrame`` conversion.  Layers
     for which HAD is inapplicable (non power-of-two in_features) are kept
-    at FP32 inside the quantised model, matching the Part-2 CSV's semantics.
+    at FP32 inside the quantised model.
     """
     rows: list[dict] = []
-    _eval = eval_fn if eval_fn is not None else _eval_accuracy
 
-    # FP32 baseline (no quantisation)
-    acc_fp32 = _eval(model, loader)
+    # FP32 baseline
+    acc_fp32 = eval_fn(model)
     rows.append({"format": "FP32", "transform": "baseline", "accuracy": acc_fp32})
 
-    # FP16 baseline – cast weights to half precision.
+    # FP16 baseline — model cast to half; eval_fn receives the cast model
     try:
         model_fp16 = _cast_model_fp16(model)
-        if eval_fn is None:
-            acc_fp16 = _eval_accuracy(model_fp16, loader, dtype=torch.float16)
-        else:
-            acc_fp16 = eval_fn(model_fp16, loader)
+        acc_fp16 = eval_fn(model_fp16)
         rows.append({"format": "FP16", "transform": "baseline",
                      "accuracy": acc_fp16})
     except Exception as exc:  # pragma: no cover - depends on PyTorch build
@@ -314,7 +308,7 @@ def accuracy_sweep(
                     fmt_name=fmt_spec.display_name,
                     transform_name=t_spec.display_name,
                 )
-                acc = _eval(mq, loader)
+                acc = eval_fn(mq)
             except Exception as exc:
                 logger.warning(
                     "%s / %s failed: %s",

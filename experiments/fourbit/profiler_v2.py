@@ -43,8 +43,9 @@ Outputs (returned as an in-memory structure + written to CSV):
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -345,3 +346,153 @@ def analyse_all(
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
+
+
+# ── Public profiling interface ────────────────────────────────────────────────
+
+class QuantProfiler:
+    """Profile any ``nn.Module`` through a configurable (format × transform) sweep.
+
+    Specify the experiment pipeline once via a :class:`FourBitConfig`, then
+    take full control of inference.  The profiler only installs hooks —
+    you decide how to call the model.
+
+    Basic usage (QSNR sweep only)::
+
+        from experiments.fourbit.config import DEFAULT_CONFIG   # 4-bit study
+        # from experiments.sqformat.config import DEFAULT_CONFIG  # SQ-Format study
+
+        profiler = QuantProfiler(model, DEFAULT_CONFIG)
+
+        with profiler:
+            for batch in dataloader:
+                model(batch["input_ids"], attention_mask=batch["attention_mask"])
+            # or: model(pixel_values=batch["image"])
+            # or: model(*batch)
+            # — any call signature your model expects
+
+        metrics_df = profiler.analyse()
+        profiler.save(metrics_df)
+
+    With an optional quality / accuracy sweep::
+
+        def my_eval(m):
+            # m may be a QuantLinear-wrapped copy — you own inference.
+            # Capture your loader and metric in the closure.
+            correct = total = 0
+            with torch.no_grad():
+                for x, y in test_loader:
+                    correct += (m(x).argmax(1) == y).sum().item()
+                    total   += y.numel()
+            return correct / total
+
+        acc_df = profiler.run_eval_sweep(my_eval)
+        profiler.save_accuracy(acc_df)
+
+    Using a different config writes to a different output directory automatically::
+
+        from experiments.sqformat.config import DEFAULT_CONFIG as SQ_CONFIG
+        profiler = QuantProfiler(model, SQ_CONFIG)
+        # → outputs to results/sqformat/part2/
+    """
+
+    def __init__(self, model: nn.Module, config: "FourBitConfig"):
+        self._model = model
+        self._config = config
+        self._collector: Optional[LayerCollector] = None
+        self._layers: Optional[Dict[str, LayerRecord]] = None
+
+    # ── Context manager ───────────────────────────────────────────────────
+
+    def __enter__(self) -> "QuantProfiler":
+        """Install forward hooks on all ``nn.Linear`` layers in the model."""
+        self._collector = LayerCollector(self._model)
+        self._collector.__enter__()
+        return self
+
+    def __exit__(self, *args) -> bool:
+        """Remove hooks and finalise per-layer tensor buffers."""
+        if self._collector is not None:
+            self._collector.__exit__(*args)
+            self._layers = self._collector.layers
+        return False
+
+    @property
+    def layers(self) -> Dict[str, LayerRecord]:
+        """Collected ``LayerRecord`` dict — available after the ``with`` block exits."""
+        if self._layers is None:
+            raise RuntimeError(
+                "No tensors collected yet.  Use 'with profiler: ...' before calling analyse()."
+            )
+        return self._layers
+
+    # ── Analysis ──────────────────────────────────────────────────────────
+
+    def analyse(self) -> pd.DataFrame:
+        """Run the (format × transform) QSNR sweep on collected tensors.
+
+        Returns a DataFrame with one row per (layer × format × transform).
+        Columns include ``qsnr_{w,x,y}_db``, ``fp16_qsnr_{w,x,y}_db``,
+        raw tensor statistics prefixed ``W_`` / ``X_`` / ``Y_``, and a
+        ``reason`` diagnostic string for failed combinations.
+        """
+        return analyse_all(self.layers, self._config)
+
+    # ── Persistence ───────────────────────────────────────────────────────
+
+    def _out_dir(self) -> str:
+        d = os.path.join(self._config.output_dir, "part2")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def save(self, metrics_df: pd.DataFrame) -> str:
+        """Write ``per_layer_metrics.csv`` and return the absolute path."""
+        path = os.path.join(self._out_dir(), "per_layer_metrics.csv")
+        metrics_df.to_csv(path, index=False)
+        return path
+
+    def save_accuracy(self, acc_df: pd.DataFrame) -> str:
+        """Write ``accuracy_sweep.csv`` and return the absolute path."""
+        path = os.path.join(self._out_dir(), "accuracy_sweep.csv")
+        acc_df.to_csv(path, index=False)
+        return path
+
+    # ── Accuracy / quality sweep ──────────────────────────────────────────
+
+    def run_eval_sweep(
+        self,
+        eval_fn: Callable[[nn.Module], float],
+    ) -> pd.DataFrame:
+        """Build quantised model variants and evaluate each with *eval_fn*.
+
+        For every (format × transform) combination in ``config``, the
+        profiler builds a deep copy of the original model with every
+        eligible ``nn.Linear`` replaced by a calibrated ``QuantLinear``,
+        then calls ``eval_fn(quantized_model)`` and records the result.
+        FP32 and FP16 baselines are added automatically.
+
+        Parameters
+        ----------
+        eval_fn : Callable[[nn.Module], float]
+            Receives the (possibly quantised) model; returns a scalar
+            metric.  You control all inference — capture your loader and
+            any other context via closure::
+
+                def eval_fn(m):
+                    correct = total = 0
+                    with torch.no_grad():
+                        for x, y in my_test_loader:
+                            pred = m(x).argmax(1)
+                            correct += (pred == y).sum().item()
+                            total   += y.numel()
+                    return correct / total
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: ``format``, ``transform``, ``accuracy``.
+            FP32 and FP16 rows use ``transform="baseline"``.
+        """
+        from experiments.fourbit.accuracy import accuracy_sweep
+        rows = accuracy_sweep(self._model, self.layers, self._config, eval_fn)
+        return pd.DataFrame(rows)

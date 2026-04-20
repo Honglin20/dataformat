@@ -77,71 +77,88 @@ Transforms work the same way — add an entry to `TRANSFORM_FACTORIES` in
 
 ## Using the Pipeline with a Custom Model
 
-Both the 4-bit and SQ-Format studies expose a model-agnostic Python API.
-You can profile and sweep **any** trained `nn.Module` — no MNIST dependency.
+`QuantProfiler` lets you run the full 4-bit or SQ-Format study pipeline on
+**any** PyTorch model. You choose the experiment pipeline via a config object,
+and you own all inference — no assumptions about batch format, call signature,
+or task type.
 
-### Minimal example (layer-level QSNR only)
+### 1. Specify the pipeline
+
+```python
+from experiments.fourbit.config import DEFAULT_CONFIG   # 4-bit study
+# from experiments.sqformat.config import DEFAULT_CONFIG  # SQ-Format study
+```
+
+### 2. Collect tensors — you drive inference
 
 ```python
 import torch
-from torch.utils.data import DataLoader, TensorDataset
-from experiments.fourbit.config import DEFAULT_CONFIG
-from experiments.fourbit.part2 import profile_model
+from experiments.fourbit.profiler_v2 import QuantProfiler
 
-# 1. Load your model
-model = torch.load("my_model.pt").eval()
+model = my_model.eval()
+profiler = QuantProfiler(model, DEFAULT_CONFIG)
 
-# 2. Build any DataLoader — only the first element of each batch is used
-ds = TensorDataset(torch.randn(256, 512))   # (samples, in_features)
-loader = DataLoader(ds, batch_size=32)
+with profiler:
+    with torch.no_grad():
+        for batch in dataloader:
+            # Any call signature your model needs:
+            model(batch["input_ids"], attention_mask=batch["attention_mask"])
+            # or: model(pixel_values=batch["image"])
+            # or: model(batch[0])
+            # or: model(*batch)
+```
 
-# 3. Run the pipeline  (writes results/fourbit/part2/per_layer_metrics.csv)
-metrics_df, layers, _ = profile_model(DEFAULT_CONFIG, model, loader)
+Hooks are installed at `__enter__` and removed at `__exit__`. Every
+`nn.Linear` layer's `(W, X, Y)` tensors are accumulated across batches.
+
+### 3. Run the (format × transform) QSNR sweep
+
+```python
+metrics_df = profiler.analyse()
+path = profiler.save(metrics_df)
+print(f"Written → {path}")
 print(metrics_df[["layer", "format", "transform", "qsnr_y_db"]].head())
 ```
 
-### With an accuracy / quality sweep
+### 4. Optional: accuracy / quality sweep
 
-Supply an `eval_fn(model, loader) -> float` to also produce
-`accuracy_sweep.csv`:
+Supply `eval_fn(model) -> float` — capture your loader and metric via closure.
+The profiler wraps the model in calibrated `QuantLinear` layers for each
+(format × transform) combo and calls your function:
 
 ```python
-def my_eval_fn(m, ldr):
-    m.eval()
-    total = correct = 0
+def eval_fn(m):
+    # m may be a QuantLinear-wrapped copy — you control inference.
+    correct = total = 0
     with torch.no_grad():
-        for (x,), y in zip(ldr, labels):
-            logits = m(x)
-            correct += (logits.argmax(1) == y).sum().item()
+        for x, y in test_loader:
+            correct += (m(x).argmax(1) == y).sum().item()
             total   += y.numel()
     return correct / total
 
-metrics_df, layers, acc_df = profile_model(
-    DEFAULT_CONFIG, model, loader, eval_fn=my_eval_fn
-)
-print(acc_df)
-```
+# Works for regression, generation quality (perplexity), etc.
+def perplexity_eval(m):
+    loss_sum = n = 0
+    with torch.no_grad():
+        for batch in lm_loader:
+            out = m(input_ids=batch["input_ids"], labels=batch["input_ids"])
+            loss_sum += out.loss.item() * batch["input_ids"].numel()
+            n        += batch["input_ids"].numel()
+    return math.exp(loss_sum / n)
 
-### SQ-Format study on a custom model
-
-```python
-from experiments.sqformat.config import DEFAULT_CONFIG as SQ_CONFIG
-from experiments.fourbit.part2 import profile_model
-
-metrics_df, layers, acc_df = profile_model(
-    SQ_CONFIG, model, loader, eval_fn=my_eval_fn
-)
-# outputs go to results/sqformat/part2/
+acc_df = profiler.run_eval_sweep(eval_fn)
+profiler.save_accuracy(acc_df)
 ```
 
 ### Output files
 
-| File | Description |
-|------|-------------|
-| `<output_dir>/part2/per_layer_metrics.csv` | One row per layer × format × transform; QSNR for W/X/Y and tensor stats |
-| `<output_dir>/part2/accuracy_sweep.csv` | FP32 / FP16 baselines + per-(format, transform) score (only when `eval_fn` is provided) |
+| File | Content |
+|------|---------|
+| `<output_dir>/part2/per_layer_metrics.csv` | One row per layer × format × transform; QSNR for W/X/Y and raw tensor stats |
+| `<output_dir>/part2/accuracy_sweep.csv` | FP32 / FP16 baselines + per-(format, transform) metric (only when `eval_fn` provided) |
 
-`output_dir` is `config.output_dir` (e.g. `results/fourbit` or `results/sqformat`).
+`output_dir` is `config.output_dir` — `results/fourbit` for the 4-bit config,
+`results/sqformat` for the SQ-Format config.
 
 ---
 
