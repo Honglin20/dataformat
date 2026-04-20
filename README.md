@@ -75,6 +75,76 @@ Transforms work the same way — add an entry to `TRANSFORM_FACTORIES` in
 
 ---
 
+## Using the Pipeline with a Custom Model
+
+Both the 4-bit and SQ-Format studies expose a model-agnostic Python API.
+You can profile and sweep **any** trained `nn.Module` — no MNIST dependency.
+
+### Minimal example (layer-level QSNR only)
+
+```python
+import torch
+from torch.utils.data import DataLoader, TensorDataset
+from experiments.fourbit.config import DEFAULT_CONFIG
+from experiments.fourbit.part2 import profile_model
+
+# 1. Load your model
+model = torch.load("my_model.pt").eval()
+
+# 2. Build any DataLoader — only the first element of each batch is used
+ds = TensorDataset(torch.randn(256, 512))   # (samples, in_features)
+loader = DataLoader(ds, batch_size=32)
+
+# 3. Run the pipeline  (writes results/fourbit/part2/per_layer_metrics.csv)
+metrics_df, layers, _ = profile_model(DEFAULT_CONFIG, model, loader)
+print(metrics_df[["layer", "format", "transform", "qsnr_y_db"]].head())
+```
+
+### With an accuracy / quality sweep
+
+Supply an `eval_fn(model, loader) -> float` to also produce
+`accuracy_sweep.csv`:
+
+```python
+def my_eval_fn(m, ldr):
+    m.eval()
+    total = correct = 0
+    with torch.no_grad():
+        for (x,), y in zip(ldr, labels):
+            logits = m(x)
+            correct += (logits.argmax(1) == y).sum().item()
+            total   += y.numel()
+    return correct / total
+
+metrics_df, layers, acc_df = profile_model(
+    DEFAULT_CONFIG, model, loader, eval_fn=my_eval_fn
+)
+print(acc_df)
+```
+
+### SQ-Format study on a custom model
+
+```python
+from experiments.sqformat.config import DEFAULT_CONFIG as SQ_CONFIG
+from experiments.fourbit.part2 import profile_model
+
+metrics_df, layers, acc_df = profile_model(
+    SQ_CONFIG, model, loader, eval_fn=my_eval_fn
+)
+# outputs go to results/sqformat/part2/
+```
+
+### Output files
+
+| File | Description |
+|------|-------------|
+| `<output_dir>/part2/per_layer_metrics.csv` | One row per layer × format × transform; QSNR for W/X/Y and tensor stats |
+| `<output_dir>/part2/accuracy_sweep.csv` | FP32 / FP16 baselines + per-(format, transform) score (only when `eval_fn` is provided) |
+
+`output_dir` is `config.output_dir` (e.g. `results/fourbit` or `results/sqformat`).
+
+---
+
 ## SQ-Format Study (`experiments/sqformat/`)
 
 17-cell SQ-Format comparison matrix (Alg 1 / Alg 2 × {INT, FP} bases × 5 INT / 3

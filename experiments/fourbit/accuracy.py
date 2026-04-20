@@ -1,4 +1,4 @@
-"""End-to-end MNIST accuracy under W4A4 quantisation.
+"""End-to-end accuracy / quality sweep under W4A4 quantisation.
 
 ``QuantLinear`` wraps every ``nn.Linear`` in a trained model so the forward
 pass simulates the exact W4A4 quantiser from :mod:`fourbit.pipeline`:
@@ -22,7 +22,7 @@ from __future__ import annotations
 import copy
 import logging
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 import numpy as np
 import torch
@@ -260,24 +260,44 @@ def accuracy_sweep(
     layers: Dict[str, LayerRecord],
     loader: tdata.DataLoader,
     config: FourBitConfig,
+    *,
+    eval_fn: Optional[Callable[[nn.Module, tdata.DataLoader], float]] = None,
 ) -> "list[dict]":
     """Run FP32 / FP16 baselines + every (format, transform) combination.
+
+    Parameters
+    ----------
+    eval_fn : Callable[[nn.Module, DataLoader], float] | None
+        Function that measures model quality.  Signature::
+
+            def eval_fn(model: nn.Module, loader: DataLoader) -> float:
+                ...
+
+        When ``None`` (default), the built-in MNIST top-1 accuracy
+        function :func:`_eval_accuracy` is used, preserving the original
+        behaviour.  When provided, it is called for both baselines and
+        every (format × transform) combination.  For the FP16 baseline the
+        model passed to ``eval_fn`` is already cast to ``torch.float16``
+        via :func:`_cast_model_fp16`.
 
     Returns a list of dicts ready for ``pd.DataFrame`` conversion.  Layers
     for which HAD is inapplicable (non power-of-two in_features) are kept
     at FP32 inside the quantised model, matching the Part-2 CSV's semantics.
     """
     rows: list[dict] = []
+    _eval = eval_fn if eval_fn is not None else _eval_accuracy
 
     # FP32 baseline (no quantisation)
-    acc_fp32 = _eval_accuracy(model, loader)
+    acc_fp32 = _eval(model, loader)
     rows.append({"format": "FP32", "transform": "baseline", "accuracy": acc_fp32})
 
-    # FP16 baseline – cast weights to half precision, keep FP32 math inside
-    # the transformer's internal ops via autocast.  Simpler: just use .half().
+    # FP16 baseline – cast weights to half precision.
     try:
         model_fp16 = _cast_model_fp16(model)
-        acc_fp16 = _eval_accuracy(model_fp16, loader, dtype=torch.float16)
+        if eval_fn is None:
+            acc_fp16 = _eval_accuracy(model_fp16, loader, dtype=torch.float16)
+        else:
+            acc_fp16 = eval_fn(model_fp16, loader)
         rows.append({"format": "FP16", "transform": "baseline",
                      "accuracy": acc_fp16})
     except Exception as exc:  # pragma: no cover - depends on PyTorch build
@@ -294,7 +314,7 @@ def accuracy_sweep(
                     fmt_name=fmt_spec.display_name,
                     transform_name=t_spec.display_name,
                 )
-                acc = _eval_accuracy(mq, loader)
+                acc = _eval(mq, loader)
             except Exception as exc:
                 logger.warning(
                     "%s / %s failed: %s",
